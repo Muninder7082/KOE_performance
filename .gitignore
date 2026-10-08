@@ -11,3 +11,6 @@ data/
 *.xlsx.bak
 .env
 .env.local
+
+# Private project guide (accounts, hosting details) - keep off GitHub
+README-PROJECT.md
