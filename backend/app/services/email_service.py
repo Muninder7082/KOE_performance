@@ -1,7 +1,7 @@
 """EmailService — SMTP (default) or HTTPS e-mail APIs.
 
 Hugging Face Spaces may block outbound SMTP ports; in that case set
-EMAIL_PROVIDER=sendgrid or resend, which send over HTTPS (port 443).
+EMAIL_PROVIDER=brevo, sendgrid or resend, which send over HTTPS (port 443).
 Every attempt is recorded in email_logs; failures never raise to callers.
 """
 from __future__ import annotations
@@ -75,6 +75,8 @@ class EmailService:
             for name, val in (("SMTP_HOST", s.smtp_host), ("EMAIL_FROM", s.email_from or s.smtp_username)):
                 if not val:
                     missing.append(name)
+        elif provider == "brevo":
+            missing += [n for n, v in (("BREVO_API_KEY", s.brevo_api_key), ("EMAIL_FROM", s.email_from)) if not v]
         elif provider == "sendgrid":
             missing += [n for n, v in (("SENDGRID_API_KEY", s.sendgrid_api_key), ("EMAIL_FROM", s.email_from)) if not v]
         elif provider == "resend":
@@ -132,7 +134,7 @@ class EmailService:
         return error is None
 
     def _scrub(self, text: str) -> str:
-        for secret in (self.s.smtp_password, self.s.sendgrid_api_key, self.s.resend_api_key):
+        for secret in (self.s.smtp_password, self.s.sendgrid_api_key, self.s.resend_api_key, self.s.brevo_api_key):
             if secret:
                 text = text.replace(secret, "***")
         return text
@@ -141,6 +143,8 @@ class EmailService:
         provider = self.s.email_provider
         if provider == "smtp":
             await asyncio.to_thread(self._send_smtp, mail, recipients)
+        elif provider == "brevo":
+            await self._send_brevo(mail, recipients)
         elif provider == "sendgrid":
             await self._send_sendgrid(mail, recipients)
         elif provider == "resend":
@@ -189,6 +193,22 @@ class EmailService:
                 await client.aclose()
         if resp.status_code >= 300:
             raise EmailSendError(f"HTTP {resp.status_code}: {resp.text[:500]}")
+
+    async def _send_brevo(self, mail: OutgoingEmail, recipients: list[str]) -> None:
+        """Brevo transactional e-mail API (free tier: 300 e-mails/day). The sender address must be
+        verified in Brevo (Senders, domains & dedicated IPs -> Senders)."""
+        payload = {
+            "sender": {"email": self._from_address(), "name": self.s.email_from_name},
+            "to": [{"email": r} for r in recipients],
+            "subject": mail.subject,
+            "htmlContent": mail.html,
+            "textContent": mail.text,
+        }
+        if mail.attachments:
+            payload["attachment"] = [{"name": a.filename, "content": base64.b64encode(a.content).decode("ascii")}
+                                     for a in mail.attachments]
+        await self._post("https://api.brevo.com/v3/smtp/email",
+                         {"api-key": self.s.brevo_api_key, "accept": "application/json"}, payload)
 
     async def _send_sendgrid(self, mail: OutgoingEmail, recipients: list[str]) -> None:
         payload = {

@@ -439,3 +439,43 @@ async def test_saved_lighthouse_report_is_served_and_purged(env, monkeypatch):
         assert len(old) == 3 and not any(i["has_report"] for i in old)  # scores kept, reports gone
         new = (await client.get("/api/results", params={"date_from": "2027-01-01"})).json()["items"]
         assert new and all(i["has_report"] for i in new if i["status"] == "success")
+
+
+async def test_brevo_provider_sends_over_https(env, monkeypatch):
+    import base64 as _b64
+    import json as _json
+
+    import httpx
+
+    from app.config import get_settings
+    from app.services.email_service import Attachment, EmailService, OutgoingEmail
+
+    monkeypatch.setenv("EMAIL_PROVIDER", "brevo")
+    monkeypatch.setenv("BREVO_API_KEY", "xkeysib-test-123")
+    get_settings.cache_clear()
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["key"] = request.headers.get("api-key")
+        seen["body"] = _json.loads(request.content)
+        return httpx.Response(201, json={"messageId": "<x@brevo>"})
+
+    async with running_app(env) as (app, client):
+        from app.container import get_container
+
+        sf = get_container().sf
+        monkeypatch.undo()  # restore the real _deliver patched by the env fixture
+        monkeypatch.setenv("EMAIL_PROVIDER", "brevo")
+        monkeypatch.setenv("BREVO_API_KEY", "xkeysib-test-123")
+        get_settings.cache_clear()
+        svc = EmailService(sf, httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+        ok = await svc.send(OutgoingEmail("test_email", ["a@example.com", "b@example.com"], "Hello", "<p>Hi</p>", "Hi",
+                                          attachments=[Attachment("website-performance.xlsx", b"PK-data")]))
+        assert ok
+        assert seen["url"] == "https://api.brevo.com/v3/smtp/email" and seen["key"] == "xkeysib-test-123"
+        b = seen["body"]
+        assert b["sender"]["email"] == "monitor@example.com" and [t["email"] for t in b["to"]] == ["a@example.com", "b@example.com"]
+        assert b["attachment"][0]["name"] == "website-performance.xlsx"
+        assert _b64.b64decode(b["attachment"][0]["content"]) == b"PK-data"
+        assert svc.status()["configured"] is True

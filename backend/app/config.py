@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     internal_scheduler_interval_seconds: int = Field(60, ge=30)
 
     # --- Email -----------------------------------------------------------------
-    email_provider: Literal["smtp", "sendgrid", "resend", "disabled"] = "smtp"
+    email_provider: Literal["smtp", "brevo", "sendgrid", "resend", "disabled"] = "smtp"
     email_from: str = ""
     email_from_name: str = "Website Performance Monitor"
     smtp_host: str = ""
@@ -63,6 +63,7 @@ class Settings(BaseSettings):
     smtp_security: Literal["starttls", "ssl", "none"] = "starttls"
     smtp_timeout_seconds: int = 30
     sendgrid_api_key: str = ""
+    brevo_api_key: str = ""
     resend_api_key: str = ""
     report_emails: str = ""  # comma separated defaults; editable in Settings page
     alert_emails: str = ""
