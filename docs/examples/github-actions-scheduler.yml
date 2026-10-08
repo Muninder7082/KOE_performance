@@ -1,0 +1,33 @@
+# Copy to .github/workflows/monitor.yml in a GitHub repository.
+# Required repository secrets: MONITOR_URL (https://<user>-<space>.hf.space) and SCHEDULER_TOKEN.
+# For a private Space also add HF_TOKEN (read access) and use the "private Space" step instead.
+name: PageSpeed scheduled checks
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"    # GitHub's minimum is 5 minutes (often runs late); prefer cron-job.org every 1 minute
+  workflow_dispatch: {}
+
+concurrency:
+  group: pagespeed-scheduler
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger scheduled checks (public Space)
+        run: |
+          curl --fail-with-body -sS -m 60 --retry 3 --retry-delay 20 -X POST \
+            -H "X-Scheduler-Token: ${{ secrets.SCHEDULER_TOKEN }}" \
+            -H "X-Scheduler-Source: github-actions" \
+            "${{ secrets.MONITOR_URL }}/api/internal/run-scheduled-checks"
+
+      # - name: Trigger scheduled checks (private Space)
+      #   run: |
+      #     curl --fail-with-body -sS -m 60 --retry 3 --retry-delay 20 -X POST \
+      #       -H "Authorization: Bearer ${{ secrets.HF_TOKEN }}" \
+      #       -H "X-Scheduler-Token: ${{ secrets.SCHEDULER_TOKEN }}" \
+      #       -H "X-Scheduler-Source: github-actions" \
+      #       "${{ secrets.MONITOR_URL }}/api/internal/run-scheduled-checks"

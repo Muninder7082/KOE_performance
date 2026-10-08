@@ -1,0 +1,1 @@
+Lighthouse report renderer v12.8.2 (dist/report/standalone.js) from https://github.com/GoogleChrome/lighthouse — Apache License 2.0 (see LICENSE). Unmodified.

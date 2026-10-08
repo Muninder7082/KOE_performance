@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+frontend/node_modules/
+frontend/dist/
+backend/frontend_dist/
+data/
+*.db
+*.xlsx
+*.xlsx.bak
+.env
+.env.local

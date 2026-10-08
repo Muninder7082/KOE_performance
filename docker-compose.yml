@@ -1,0 +1,41 @@
+# Local development / self-hosting: PostgreSQL + the app on http://localhost:7860
+#   cp .env.example .env   (fill PAGESPEED_API_KEY, SECRET_KEY, SCHEDULER_TOKEN, ADMIN_*)
+#   docker compose up --build
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: monitor
+      POSTGRES_PASSWORD: monitor
+      POSTGRES_DB: monitor
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U monitor -d monitor"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    ports:
+      - "5432:5432"
+
+  app:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://monitor:monitor@db:5432/monitor
+      LOCAL_STORAGE_DIR: /data
+      STORAGE_LOCAL_IS_PERSISTENT: "true"
+      COOKIE_SECURE: "false"   # plain http on localhost
+      TRUSTED_PROXY_HOPS: "0"  # no proxy in front locally
+    volumes:
+      - exceldata:/data
+    ports:
+      - "7860:7860"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  exceldata:
