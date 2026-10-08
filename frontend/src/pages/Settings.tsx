@@ -131,7 +131,7 @@ export default function SettingsPage() {
 
   return (
     <>
-      <PageHeader title="Settings" description="Secrets (API keys, passwords, tokens) are configured as Hugging Face Secrets and are never shown here." />
+      <PageHeader title="Settings" description="Secrets (API keys, passwords, tokens) are set as server environment variables (Render / Hugging Face) and are never shown here." />
       <div className="grid gap-5 xl:grid-cols-2">
         <Section title="Integrations" description="Status of server-side configuration.">
           <dl>
@@ -156,7 +156,7 @@ export default function SettingsPage() {
             <Row label="Scheduler">
               <span className="text-xs">Endpoint <code className="rounded bg-slate-100 px-1">POST {i.scheduler.endpoint}</code></span>
               <span className="block text-xs text-slate-500">Token {i.scheduler.token_configured ? "configured" : "missing"} · catch-up {i.scheduler.catchup_hours} h ·
-                built-in timer {i.scheduler.internal_enabled ? `every ${Math.round(i.scheduler.internal_interval_seconds / 60)} min while the Space is awake` : "off"}</span>
+                built-in timer {i.scheduler.internal_enabled ? `every ${Math.round(i.scheduler.internal_interval_seconds / 60)} min while the server is awake` : "off"}</span>
             </Row>
             <Row label="Last report">
               <span className="text-xs">Last occurrence {fmtDateTime(i.daily_report.last_sent_occurrence)} {i.daily_report.last_status && <Pill tone={i.daily_report.last_status === "sent" ? "green" : "red"}>{i.daily_report.last_status}</Pill>}</span>
