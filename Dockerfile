@@ -1,4 +1,4 @@
-# Website Performance Monitor — production image for a Hugging Face Docker Space.
+# Website Performance Monitor — production image (Render, Hugging Face Docker Space or any Docker host).
 # Stage 1 builds the React frontend; stage 2 runs FastAPI (which also serves the UI) on :7860.
 
 FROM node:20-alpine AS frontend
@@ -32,9 +32,9 @@ USER user
 EXPOSE 7860
 
 HEALTHCHECK --interval=60s --timeout=5s --start-period=60s --retries=3 \
-  CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:7860/api/health', timeout=4).status == 200 else 1)"
+  CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:%s/api/health' % __import__('os').getenv('PORT', '7860'), timeout=4).status == 200 else 1)"
 
 # One worker: manual-test progress and the in-process timer live in memory, and the
 # database lease locks make scheduled runs safe even if a second container appears.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "7860", "--workers", "1", \
-     "--proxy-headers", "--forwarded-allow-ips", "*", "--timeout-graceful-shutdown", "20", "--no-server-header"]
+# PORT is provided by Render/Railway/Cloud Run; Hugging Face uses the default 7860.
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-7860} --workers 1 --proxy-headers --forwarded-allow-ips '*' --timeout-graceful-shutdown 20 --no-server-header"]
