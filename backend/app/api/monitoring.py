@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -166,13 +166,31 @@ async def open_in_google_viewer(result_id: int, user: User = Depends(current_use
         report = None
     if report is None:
         return HTMLResponse(lighthouse_reports.missing_html(r), status_code=404)
-    url = lighthouse_reports.viewer_url(report)
-    page = ('<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="referrer" content="no-referrer">'
-            '<title>Opening Lighthouse Viewer…</title></head><body style="font-family:Segoe UI,Arial,sans-serif;padding:40px">'
-            '<p>Opening the saved report on Google Lighthouse Viewer…</p>'
-            f'<script type="application/json" id="viewer-url">{json.dumps(url)}</script>'
-            '<script src="/lighthouse-assets/open-viewer.js"></script></body></html>')
-    return HTMLResponse(page, headers={"Cache-Control": "private, no-store", "Referrer-Policy": "no-referrer"})
+    return HTMLResponse(lighthouse_reports.viewer_redirect_page(report),
+                        headers={"Cache-Control": "private, no-store", "Referrer-Policy": "no-referrer"})
+
+
+@router.get("/public/report/{result_id}/{sig}", include_in_schema=False)
+async def public_report(result_id: int, sig: str, request: Request, session: AsyncSession = Depends(get_session)):
+    """Per-test report link used in the Excel file: no login, protected by an HMAC signature."""
+    from ..models import PerformanceResult
+    from ..ratelimit import client_ip, limiter
+    from ..services import lighthouse_reports
+
+    limiter.hit(f"public-report:{client_ip(request)}", 60, 60)
+    if not lighthouse_reports.verify_signature(result_id, sig):
+        raise HTTPException(404, "Not found")
+    r = await session.get(PerformanceResult, result_id)
+    if r is None:
+        raise HTTPException(404, "Not found")
+    try:
+        report = await get_container().reports.load(r)
+    except Exception:  # noqa: BLE001
+        report = None
+    if report is None:
+        return HTMLResponse(lighthouse_reports.missing_html(r), status_code=404)
+    return HTMLResponse(lighthouse_reports.viewer_redirect_page(report),
+                        headers={"Cache-Control": "private, no-store", "Referrer-Policy": "no-referrer"})
 
 
 @router.get("/email-logs")

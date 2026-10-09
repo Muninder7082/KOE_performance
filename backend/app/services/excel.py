@@ -39,6 +39,7 @@ from ..clock import now_utc
 from ..config import get_settings
 from ..models import MonitoredWebsite, PerformanceResult, ScheduledTask
 from . import global_schedule, reporting, settings_service
+from .lighthouse_reports import public_report_link
 from .pagespeed import psi_report_link
 from .storage import StorageService
 
@@ -51,9 +52,10 @@ SUMMARY = "Monitoring Summary"
 HISTORY_HEADERS = [
     "Date", "Time", "Website Name", "URL", "Device", "Performance Score", "Accessibility Score",
     "Best Practices Score", "SEO Score", "FCP", "LCP", "TBT", "CLS", "Speed Index", "Status",
-    "Final URL", "Test Status", "Error", "Result ID",
+    "PageSpeed Report", "Test Status", "Error", "Result ID",
 ]
 RESULT_ID_COL = len(HISTORY_HEADERS)  # 1-based index of "Result ID"
+REPORT_COL = HISTORY_HEADERS.index("PageSpeed Report") + 1
 MAX_SHEET_ROWS = 1_048_576  # Excel's hard limit; history rolls over to "Performance History 2", ...
 LOCK_NAME = "excel_workbook"
 
@@ -94,7 +96,7 @@ def history_row(r: PerformanceResult, tz: ZoneInfo) -> list:
     return [
         local.date(), local.time().replace(second=0, microsecond=0), r.website_name, r.requested_url,
         r.strategy.capitalize(), r.performance_score, r.accessibility_score, r.best_practices_score,
-        r.seo_score, r.fcp_s, r.lcp_s, r.tbt_ms, r.cls, r.speed_index_s, _status(r), r.final_url,
+        r.seo_score, r.fcp_s, r.lcp_s, r.tbt_ms, r.cls, r.speed_index_s, _status(r), public_report_link(r),
         "SUCCESS" if r.status == "success" else "FAILED", error, r.id,
     ]
 
@@ -130,6 +132,11 @@ def _append_history(ws, row: list) -> None:
     if fill:
         ws.cell(r, 6).fill = fill
         ws.cell(r, 15).fill = fill
+    link = row[REPORT_COL - 1]
+    if isinstance(link, str) and link.startswith("http"):
+        cell = ws.cell(r, REPORT_COL)
+        cell.hyperlink = link
+        cell.style = "Hyperlink"
 
 
 @dataclass
@@ -251,6 +258,9 @@ def _build(path: Path, out: Path, exists: bool, rows: list[tuple[int, list]], sn
         wb = _open(path)
         sheets = _history_sheets(wb)
         present = _existing_ids(sheets)
+        for ws_h in sheets:  # header label only; history rows are never modified
+            if ws_h.cell(1, REPORT_COL).value == "Final URL":
+                ws_h.cell(1, REPORT_COL).value = "PageSpeed Report"
     else:
         wb = Workbook()
         wb.remove(wb.active)
@@ -369,7 +379,18 @@ class ExcelReportService:
         q = select(PerformanceResult).order_by(PerformanceResult.tested_at, PerformanceResult.id)
         if pending_only:
             q = q.where(PerformanceResult.excel_appended.is_(False))
-        return [(r.id, history_row(r, tz)) for r in (await session.scalars(q)).all()]
+        results = list((await session.scalars(q)).all())
+        # Keep each page's Desktop and Mobile rows together: group by (run, page), order the groups by
+        # when the page's first result finished, then Desktop before Mobile inside a group.
+        first_done: dict[tuple, object] = {}
+        for r in results:
+            key = (r.run_id or f"single-{r.id}", r.website_id, r.website_name)
+            if key not in first_done or r.tested_at < first_done[key]:
+                first_done[key] = r.tested_at
+        results.sort(key=lambda r: (first_done[(r.run_id or f"single-{r.id}", r.website_id, r.website_name)],
+                                    r.run_id or "", r.website_name.lower(), r.website_id or 0,
+                                    0 if r.strategy == "desktop" else 1, r.id))
+        return [(r.id, history_row(r, tz)) for r in results]
 
     async def sync(self) -> SyncResult:
         """Append every not-yet-exported result and refresh the snapshot sheets."""

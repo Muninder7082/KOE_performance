@@ -227,25 +227,6 @@ def daily_report_email(ov, tz: ZoneInfo, now: datetime, base_url: str, attached:
     font = "font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif;"
     day = now.astimezone(tz).strftime("%d-%b-%Y")
     subject = f"Daily Website Performance Report - {day}"
-    attention_total = ov.attention + ov.failed_websites
-
-    def tile(icon: str, value, label: str, bg: str, fg: str, width: str) -> str:
-        return (f'<td width="{width}" valign="top" style="padding:5px;">'
-                f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
-                f'style="background:{bg};border-radius:10px;"><tr>'
-                f'<td width="34" valign="top" style="padding:14px 0 14px 14px;font-size:20px;line-height:24px;color:{fg};">{icon}</td>'
-                f'<td style="padding:12px 12px 12px 8px;{font}">'
-                f'<div style="font-size:24px;line-height:28px;font-weight:800;color:#0f172a;">{escape(str(value))}</div>'
-                f'<div style="font-size:12px;line-height:16px;color:#475569;">{label}</div></td>'
-                f'</tr></table></td>')
-
-    row1 = (tile("&#127760;", ov.total_websites, "Total Websites", "#eff6ff", "#2563eb", "25%")
-            + tile("&#9989;", ov.active_websites, "Active Websites", "#ecfdf5", "#16a34a", "25%")
-            + tile("&#129514;", ov.successful_today, "Successful Tests<br>(today)", "#f5f3ff", "#7c3aed", "25%")
-            + tile("&#10060;", ov.failed_today, "Failed Tests<br>(today)", "#fef2f2", "#dc2626", "25%"))
-    row2 = (tile("&#128187;", _v(ov.avg_desktop), "Average Desktop<br>Performance", "#fff7ed", "#ea580c", "33%")
-            + tile("&#128241;", _v(ov.avg_mobile), "Average Mobile<br>Performance", "#eff6ff", "#2563eb", "33%")
-            + tile("&#9888;&#65039;", attention_total, "Pages Requiring<br>Attention", "#fef2f2", "#dc2626", "34%"))
 
     th = (f'style="padding:10px 8px;background:#f8fafc;border-bottom:1px solid #e2e8f0;text-align:left;'
           f'font-size:12px;font-weight:700;color:#334155;{font}"')
@@ -312,18 +293,6 @@ def daily_report_email(ov, tz: ZoneInfo, now: datetime, base_url: str, attached:
 </td></tr>
 <tr><td style="height:14px;line-height:14px;font-size:0;">&nbsp;</td></tr>
 
-<!-- summary -->
-<tr><td {card}>
- <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
-  <tr><td style="padding:18px 20px 6px;{font}">
-   <div style="font-size:16px;font-weight:800;color:#0f172a;">&#128196;&nbsp; Summary</div>
-   <div style="font-size:12px;color:#64748b;">Overview of today's website performance tests</div></td></tr>
-  <tr><td style="padding:6px 15px 4px;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>{row1}</tr></table></td></tr>
-  <tr><td style="padding:0 15px 15px;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>{row2}</tr></table></td></tr>
- </table>
-</td></tr>
-<tr><td style="height:14px;line-height:14px;font-size:0;">&nbsp;</td></tr>
-
 <!-- details -->
 <tr><td {card}>
  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
@@ -354,14 +323,8 @@ def daily_report_email(ov, tz: ZoneInfo, now: datetime, base_url: str, attached:
 
 </table></td></tr></table></body></html>"""
 
-    summary = [
-        ("Total Websites", ov.total_websites), ("Active Websites", ov.active_websites),
-        ("Successful Tests (today)", ov.successful_today), ("Failed Tests (today)", ov.failed_today),
-        ("Average Desktop Performance", _v(ov.avg_desktop)), ("Average Mobile Performance", _v(ov.avg_mobile)),
-        ("Pages Requiring Attention", attention_total),
-    ]
-    text = (f"{subject}\n\n" + "\n".join(f"{k}: {v}" for k, v in summary)
-            + "\n\nWebsite | URL | Desktop | Mobile | Status | Last Checked\n" + "\n".join(rows_text) + "\n"
+    text = (f"{subject}\n"
+            + "\nWebsite | URL | Desktop | Mobile | Status | Last Checked\n" + "\n".join(rows_text) + "\n"
             + ("\nThe complete historical workbook website-performance.xlsx is attached.\n" if attached
                else "\nThe Excel workbook could not be attached - see Email Logs.\n")
             + (f"\nDashboard: {base_url}\n" if base_url else ""))

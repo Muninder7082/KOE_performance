@@ -654,3 +654,37 @@ async def test_scheduled_run_sends_one_combined_alert_email(env):
         assert day4["subject"] == "Performance Attention Required - 2 pages"
         assert "Contact (Desktop) [NEW]" in day4["text"] and "Courses (Mobile) [still below]" in day4["text"]
         assert day4["text"].index("Contact") < day4["text"].index("Courses")  # new problems first
+
+
+
+async def test_excel_report_column_has_per_test_signed_link(env, monkeypatch):
+    from app.config import get_settings
+
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://koe.example.com")
+    get_settings.cache_clear()
+    clock.set_now(ist(2026, 10, 8, 8, 0))
+    async with running_app(env) as (app, client):
+        await login(client)
+        for name, url in (("About", "https://a.example.com/"), ("Contact", "https://c.example.com/")):
+            await client.post("/api/websites", json={"name": name, "url": url})
+        clock.set_now(ist(2026, 10, 8, 8, 41))
+        await client.post("/api/internal/run-scheduled-checks?wait=true", headers=SCHED_HEADERS)
+        wb = load_workbook(env.storage_dir / "website-performance.xlsx")
+        ws = wb["Performance History"]
+        assert ws.cell(1, 16).value == "PageSpeed Report"
+        rows = list(ws.iter_rows(min_row=2, values_only=True))
+        assert [(r[2], r[4]) for r in rows] == [("About", "Desktop"), ("About", "Mobile"),
+                                               ("Contact", "Desktop"), ("Contact", "Mobile")]
+        links = [r[15] for r in rows]
+        assert len(set(links)) == 4 and all(l.startswith("https://koe.example.com/api/public/report/") for l in links)
+        assert ws.cell(2, 16).hyperlink.target == links[0]
+        wb.close()
+        # The link works without logging in and opens Google Lighthouse Viewer ...
+        client.cookies.clear()
+        path = links[0].replace("https://koe.example.com", "")
+        r = await client.get(path)
+        assert r.status_code == 200 and "googlechrome.github.io/lighthouse/viewer/?gzip=1#" in r.text
+        # ... but a changed id or signature does not.
+        rid, sig = path.rsplit("/", 2)[-2:]
+        assert (await client.get(f"/api/public/report/{int(rid) + 1}/{sig}")).status_code == 404
+        assert (await client.get(f"/api/public/report/{rid}/{'0' * 24}")).status_code == 404

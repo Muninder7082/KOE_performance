@@ -111,6 +111,41 @@ class LighthouseReportService:
 VIEWER_URL = "https://googlechrome.github.io/lighthouse/viewer/"
 
 
+def report_signature(result_id: int) -> str:
+    """Unguessable signature so a per-test report link can be opened without logging in
+    (e.g. from the Excel file) while other result ids cannot be enumerated."""
+    import hashlib
+    import hmac
+
+    key = get_settings().secret_key.encode("utf-8")
+    return hmac.new(key, f"report:{result_id}".encode(), hashlib.sha256).hexdigest()[:24]
+
+
+def verify_signature(result_id: int, sig: str) -> bool:
+    import hmac
+
+    return hmac.compare_digest(report_signature(result_id), sig or "")
+
+
+def public_report_link(result: PerformanceResult) -> str | None:
+    """Short per-test link that opens this test's report on Google Lighthouse Viewer.
+    (The viewer URL itself carries the whole report and is far too long for an Excel cell.)"""
+    base = get_settings().public_base_url.rstrip("/")
+    if not base or result.status != "success" or not result.report_key:
+        return None
+    return f"{base}/api/public/report/{result.id}/{report_signature(result.id)}"
+
+
+def viewer_redirect_page(report: dict) -> str:
+    """Tiny page that sends the browser to Google Lighthouse Viewer with the stored report."""
+    url = viewer_url(report)
+    return ('<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="referrer" content="no-referrer">'
+            '<title>Opening Lighthouse Viewer…</title></head><body style="font-family:Segoe UI,Arial,sans-serif;padding:40px">'
+            '<p>Opening the saved report on Google Lighthouse Viewer…</p>'
+            f'<script type="application/json" id="viewer-url">{json.dumps(url)}</script>'
+            '<script src="/lighthouse-assets/open-viewer.js"></script></body></html>')
+
+
 def viewer_url(report: dict) -> str:
     """Link that opens this exact report in Google's official Lighthouse Viewer.
 

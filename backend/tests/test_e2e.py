@@ -109,7 +109,7 @@ async def test_full_workflow(env):
         assert len(reports) == 1
         rep = reports[0]
         assert rep["subject"] == "Daily Website Performance Report - 08-Oct-2026"
-        assert "Pages Requiring Attention" in rep["text"] and "Homepage" in rep["text"]
+        assert "Homepage" in rep["text"] and "ATTENTION" in rep["text"]
         (fname, content), = rep["attachments"]
         assert fname == "website-performance.xlsx"
         att = load_workbook(io.BytesIO(content))["Performance History"]
@@ -149,7 +149,9 @@ async def test_full_workflow(env):
         assert len(rows) == 10
         dates = sorted({row[0].strftime("%d-%b-%Y") for row in rows})
         assert dates == ["08-Oct-2026", "09-Oct-2026"]
-        assert [row[18] for row in rows] == sorted(row[18] for row in rows)  # appended in order, none removed
+        assert sorted(row[18] for row in rows) == list(range(1, 11))  # every result once, none removed
+        for a, b in zip(rows[::2], rows[1::2]):  # each page's Desktop row is directly followed by its Mobile row
+            assert (a[2], a[4], b[2], b[4]) == (a[2], "Desktop", a[2], "Mobile")
 
         # Recovery: alert closed + recovery e-mail
         alerts = (await client.get("/api/alerts")).json()["items"]
