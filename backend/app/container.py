@@ -16,6 +16,7 @@ from .services.pagespeed import PageSpeedService
 from .services.report import ReportService
 from .services.scheduler import SchedulerService
 from .services.storage import StorageService, get_storage
+from .services.wakeup import WakeupService
 
 
 @dataclass
@@ -31,6 +32,7 @@ class Container:
     report: ReportService
     scheduler: SchedulerService
     jobs: JobManager
+    wakeup: WakeupService
 
 
 def build_container(sf: async_sessionmaker[AsyncSession], *, storage: StorageService | None = None,
@@ -44,9 +46,10 @@ def build_container(sf: async_sessionmaker[AsyncSession], *, storage: StorageSer
     reports = LighthouseReportService(sf, storage)
     monitoring = PerformanceMonitoringService(sf, pagespeed, excel, alerts, reports)
     report = ReportService(sf, excel, email)
-    scheduler = SchedulerService(sf, monitoring, excel, report)
+    wakeup = WakeupService(email_http)
+    scheduler = SchedulerService(sf, monitoring, excel, report, wakeup)
     jobs = JobManager(sf, monitoring)
-    return Container(sf, storage, pagespeed, email, excel, alerts, reports, monitoring, report, scheduler, jobs)
+    return Container(sf, storage, pagespeed, email, excel, alerts, reports, monitoring, report, scheduler, jobs, wakeup)
 
 
 _container: Container | None = None

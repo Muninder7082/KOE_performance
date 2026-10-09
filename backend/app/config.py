@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     # --- Scheduling ------------------------------------------------------------
     schedule_catchup_hours: int = Field(6, ge=1, le=24)
     enable_internal_scheduler: bool = True
+    # Sleep-friendly hosting (Render free): wake shortly before each run, sleep after the report
+    keep_alive_enabled: bool = True   # self-ping PUBLIC_BASE_URL only while a run is near/unfinished
+    cronjob_api_key: str = ""         # cron-job.org API key -> wake-up job follows Settings automatically
+    cronjob_job_id: str = ""          # id of the cron-job.org job that calls run-scheduled-checks
     internal_scheduler_interval_seconds: int = Field(60, ge=30)
 
     # --- Email -----------------------------------------------------------------

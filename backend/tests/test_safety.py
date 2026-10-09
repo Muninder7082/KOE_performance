@@ -512,3 +512,89 @@ async def test_idle_scheduler_ticks_do_not_query_the_database(env):
         clock.set_now(ist(2026, 10, 8, 23, 31))
         r = await client.post("/api/internal/run-scheduled-checks?wait=true", headers=SCHED_HEADERS)
         assert r.json()["websites_due"] == 1
+
+
+# ---- Wake only around the scheduled run ------------------------------------------------------
+def test_wake_schedule_is_20_minutes_before_run():
+    from app.services.settings_service import AppSettings
+    from app.services.wakeup import wake_schedule
+
+    s = wake_schedule(AppSettings(default_monitor_time="09:00", timezone="Asia/Kolkata"))
+    assert (s["hours"], s["minutes"], s["wdays"], s["timezone"]) == ([8], [40, 41, 42, 43], [-1], "Asia/Kolkata")
+    s = wake_schedule(AppSettings(default_monitor_time="00:10", default_frequency="weekly", monitor_day_of_week=0))
+    assert (s["hours"], s["minutes"], s["wdays"]) == ([23], [50, 51, 52, 53], [0])  # Sunday night for Monday 00:10
+    s = wake_schedule(AppSettings(default_monitor_time="08:40", default_frequency="every_6_hours"))
+    assert s["hours"] == [2, 8, 14, 20] and s["minutes"] == [20, 21, 22, 23]
+
+
+def test_stay_awake_only_while_needed():
+    from app.services.wakeup import WakeupService
+
+    f = WakeupService.needs_to_stay_awake
+    run, nxt = ist(2026, 10, 9, 9, 0), ist(2026, 10, 10, 9, 0)
+    assert f(ist(2026, 10, 9, 8, 41), None, None, run, False)            # 19 min before the run
+    assert not f(ist(2026, 10, 9, 7, 0), None, None, run, False)         # 2 h before: sleep
+    assert f(ist(2026, 10, 9, 9, 20), run, None, nxt, False)             # run not finished yet
+    assert f(ist(2026, 10, 9, 9, 20), run, run, nxt, True)               # still testing
+    assert not f(ist(2026, 10, 9, 9, 20), run, run, nxt, False)          # report sent: sleep
+
+
+async def test_settings_change_moves_cron_job_and_keep_alive_stops_after_report(env, monkeypatch):
+    import json as _json
+
+    import httpx
+
+    from app.config import get_settings
+    from app.container import build_container
+
+    monkeypatch.setenv("CRONJOB_API_KEY", "cj-secret-key")
+    monkeypatch.setenv("CRONJOB_JOB_ID", "4242")
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://koe.example.com")
+    get_settings.cache_clear()
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.method, str(request.url), request.headers.get("authorization"),
+                      _json.loads(request.content) if request.content else None))
+        return httpx.Response(200, json={})
+
+    clock.set_now(ist(2026, 10, 9, 7, 0))
+    from app.main import create_app
+
+    app = create_app()
+    app.state.container_factory = lambda sf: build_container(
+        sf, psi_client=env.psi.client(), email_http=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app, client=("203.0.113.9", 5555))
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            await login(client)
+            await client.post("/api/websites", json={"name": "A", "url": "https://a.example.com/"})
+            r = await client.put("/api/settings", json={"default_monitor_time": "09:00"})
+            assert r.json()["wakeup"]["ok"] is True
+            patch = [c for c in calls if c[0] == "PATCH"][-1]
+            assert patch[1] == "https://api.cron-job.org/jobs/4242" and patch[2] == "Bearer cj-secret-key"
+            assert patch[3]["job"]["schedule"]["hours"] == [8] and patch[3]["job"]["schedule"]["minutes"] == [40, 41, 42, 43]
+            assert patch[3]["job"]["enabled"] is True
+            from app.container import get_container
+
+            sched = get_container().scheduler
+            pings = lambda: [c for c in calls if c[0] == "GET" and c[1].endswith("/api/health")]  # noqa: E731
+            clock.set_now(ist(2026, 10, 9, 7, 30))                 # far from 09:00: no self-ping
+            await sched.tick()
+            assert pings() == []
+            clock.set_now(ist(2026, 10, 9, 8, 41))                 # woken by cron-job.org: stay awake
+            await sched.tick()
+            assert len(pings()) == 1
+            clock.set_now(ist(2026, 10, 9, 8, 43))                 # < 4 min later: no extra ping
+            await sched.tick()
+            assert len(pings()) == 1
+            clock.set_now(ist(2026, 10, 9, 9, 1))                  # run time: tests + report
+            r = await client.post("/api/internal/run-scheduled-checks?wait=true", headers=SCHED_HEADERS)
+            assert r.json()["report_sent"] is True
+            n = len(pings())
+            for minute in (10, 20, 40):                            # report sent: let it sleep
+                clock.set_now(ist(2026, 10, 9, 9, minute))
+                await sched.tick()
+            assert len(pings()) == n
+            body = (await client.get("/api/settings")).text
+            assert "cj-secret-key" not in body

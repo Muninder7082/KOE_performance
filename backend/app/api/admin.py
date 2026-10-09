@@ -21,6 +21,7 @@ from ..schemas import SettingsUpdate, TestEmailIn, TestPageSpeedIn, UserCreate, 
 from ..security import current_user, hash_password, require_admin, validate_password_strength
 from ..clock import now_utc
 from ..services import email_templates, global_schedule, settings_service
+from ..services.wakeup import describe_wake as wakeup_describe
 from ..services.email_service import TEST_EMAIL, OutgoingEmail
 from ..services.pagespeed import PageSpeedError
 from ..services.scheduler import REPORT_TASK
@@ -50,6 +51,15 @@ async def get_app_settings(user: User = Depends(current_user), session: AsyncSes
                 "catchup_hours": env.schedule_catchup_hours,
                 "token_configured": bool(env.scheduler_token),
             },
+            "wakeup": {
+                "configured": c.wakeup.configured,
+                "plan": wakeup_describe(app),
+                "last_sync_ok": c.wakeup.status.ok,
+                "last_sync_at": c.wakeup.status.synced_at,
+                "message": c.wakeup.status.message,
+                "keep_alive": env.keep_alive_enabled and bool(env.public_base_url),
+                "server_awake_needed": c.scheduler.needs_to_stay_awake(now_utc()),
+            },
             "schedule": {
                 "description": (sch := global_schedule.compute(app, now_utc())).description,
                 "next_run_at": sch.next_run_at,
@@ -70,7 +80,9 @@ async def update_app_settings(body: SettingsUpdate, user: User = Depends(require
     except ValidationError as exc:
         raise HTTPException(422, exc.errors(include_url=False, include_input=False)) from None
     get_container().scheduler.invalidate()  # new schedule takes effect on the next tick
-    return {"settings": app.model_dump(mode="json")}
+    wake = await get_container().wakeup.sync(app)  # move the cron-job.org wake-up with the schedule
+    return {"settings": app.model_dump(mode="json"),
+            "wakeup": {"configured": wake.configured, "ok": wake.ok, "message": wake.message}}
 
 
 @router.post("/settings/test-pagespeed")

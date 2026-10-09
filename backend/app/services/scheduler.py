@@ -23,6 +23,7 @@ from . import global_schedule, settings_service
 from .excel import ExcelReportService
 from .monitoring import PerformanceMonitoringService, WebsiteNotFound
 from .report import ReportService
+from .wakeup import WakeupService
 
 log = logging.getLogger(__name__)
 
@@ -36,7 +37,9 @@ PURGE_TASK = "report_purge"
 
 class SchedulerService:
     def __init__(self, sf: async_sessionmaker[AsyncSession], monitoring: PerformanceMonitoringService,
-                 excel: ExcelReportService, report: ReportService):
+                 excel: ExcelReportService, report: ReportService, wakeup: WakeupService | None = None):
+        self.wakeup = wakeup
+        self._active_runs = 0
         self.sf = sf
         self.monitoring = monitoring
         self.excel = excel
@@ -183,6 +186,7 @@ class SchedulerService:
             return {"status": "already_running"}
         lost = asyncio.Event()
         keeper = asyncio.create_task(self._keep_lease(owner, lost))
+        self._active_runs += 1
         started = now_utc()
         summary = {"status": "completed", "run_id": run_id, "websites_due": 0, "tests_succeeded": 0,
                    "tests_failed": 0, "report_sent": None, "errors": []}
@@ -238,6 +242,7 @@ class SchedulerService:
             summary["errors"].append(f"{type(exc).__name__}: {exc}")
         finally:
             keeper.cancel()
+            self._active_runs -= 1
             try:
                 await locks.release(self.sf, CYCLE_LOCK, owner)
             except Exception:  # noqa: BLE001 - the lease expires on its own
@@ -304,13 +309,29 @@ class SchedulerService:
             summary["errors"].append(f"Excel: {exc}")
 
     # ---- optional in-process loop ------------------------------------------------
+    def needs_to_stay_awake(self, now: datetime) -> bool:
+        """True while a run is coming up soon, running, or its report is not sent yet."""
+        if self._settings_cache is None:
+            return True  # unknown yet: stay awake until the first tick has loaded settings
+        sched = global_schedule.compute(self._settings_cache, now)
+        return WakeupService.needs_to_stay_awake(now, sched.current_occurrence, self._done_occurrence,
+                                                 sched.next_run_at, self._active_runs > 0)
+
+    async def tick(self) -> None:
+        """One internal-timer tick: start a due run in the background, then keep the
+        server awake only if a run is near or unfinished."""
+        try:
+            await self.trigger("internal", wait=False)
+        except Exception:  # noqa: BLE001
+            log.exception("Internal scheduler tick failed")
+        if self.wakeup is not None:
+            try:
+                await self.wakeup.keep_alive(self.needs_to_stay_awake(now_utc()))
+            except Exception:  # noqa: BLE001
+                log.exception("Keep-alive ping failed")
+
     async def internal_loop(self, interval: int) -> None:
         await asyncio.sleep(30)  # let startup finish
         while True:
-            try:
-                await self.trigger("internal", wait=True)
-            except asyncio.CancelledError:
-                raise
-            except Exception:  # noqa: BLE001
-                log.exception("Internal scheduler tick failed")
+            await self.tick()
             await asyncio.sleep(interval)

@@ -57,9 +57,13 @@ export default function SettingsPage() {
     try {
       const { report_emails_text, alert_emails_text, ...rest } = form;
       const body = { ...rest, report_emails: splitEmails(report_emails_text), alert_emails: splitEmails(alert_emails_text) };
-      const res = await put<{ settings: AppSettings }>("/api/settings", body);
+      const res = await put<{ settings: AppSettings; wakeup?: { configured: boolean; ok: boolean | null; message: string | null } }>("/api/settings", body);
       setAppTimezone(res.settings.timezone);
       toast.success("Settings saved");
+      if (res.wakeup?.configured) {
+        if (res.wakeup.ok) toast.info("Server wake-up moved with the new schedule");
+        else toast.error(res.wakeup.message ?? "Could not update the cron-job.org wake-up job");
+      }
       reload(true);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Save failed");
@@ -157,6 +161,15 @@ export default function SettingsPage() {
               <span className="text-xs">Endpoint <code className="rounded bg-slate-100 px-1">POST {i.scheduler.endpoint}</code></span>
               <span className="block text-xs text-slate-500">Token {i.scheduler.token_configured ? "configured" : "missing"} · catch-up {i.scheduler.catchup_hours} h ·
                 built-in timer {i.scheduler.internal_enabled ? `every ${Math.round(i.scheduler.internal_interval_seconds / 60)} min while the server is awake` : "off"}</span>
+            </Row>
+            <Row label="Server wake-up">
+              {i.wakeup.configured ? (
+                i.wakeup.last_sync_ok === false ? <Pill tone="red">cron-job.org sync failed</Pill> : <Pill tone="green">Automatic (cron-job.org synced)</Pill>
+              ) : <Pill tone="amber">Manual</Pill>}
+              <span className="mt-1 block text-xs text-slate-600">Wakes {i.wakeup.plan}; stays awake until the report is e-mailed, then sleeps.</span>
+              {!i.wakeup.configured && <span className="block text-xs text-amber-700">Set CRONJOB_API_KEY and CRONJOB_JOB_ID so the cron-job.org job follows this schedule automatically; otherwise set the job to the times above by hand.</span>}
+              {i.wakeup.message && i.wakeup.last_sync_ok === false && <span className="block text-xs text-red-600">{i.wakeup.message}</span>}
+              {!i.wakeup.keep_alive && <span className="block text-xs text-amber-700">PUBLIC_BASE_URL is not set, so the server cannot keep itself awake during long runs.</span>}
             </Row>
             <Row label="Last report">
               <span className="text-xs">Last occurrence {fmtDateTime(i.daily_report.last_sent_occurrence)} {i.daily_report.last_status && <Pill tone={i.daily_report.last_status === "sent" ? "green" : "red"}>{i.daily_report.last_status}</Pill>}</span>

@@ -58,6 +58,9 @@ async def lifespan(app: FastAPI):
     factory = getattr(app.state, "container_factory", None) or build_container  # tests inject fakes here
     container = factory(sf)
     set_container(container)
+    async with sf() as session:
+        startup_settings = await settings_service.load(session)
+    sync_task = asyncio.create_task(container.wakeup.sync(startup_settings))  # wake-up job follows Settings
     aborted = await container.scheduler.abort_stale_runs()
     if aborted:
         log.warning("Marked %d interrupted scheduler run(s) as aborted", aborted)
@@ -74,6 +77,7 @@ async def lifespan(app: FastAPI):
     finally:
         if loop_task:
             loop_task.cancel()
+        sync_task.cancel()
         await container.scheduler.shutdown()
         await container.jobs.shutdown()
         await container.pagespeed.aclose()

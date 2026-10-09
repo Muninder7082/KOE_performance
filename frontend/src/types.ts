@@ -151,6 +151,7 @@ export interface SettingsResponse {
     database: { engine: string };
     scheduler: { internal_enabled: boolean; internal_interval_seconds: number; endpoint: string; catchup_hours: number; token_configured: boolean };
     schedule: { description: string; next_run_at: string };
+    wakeup: { configured: boolean; plan: string; last_sync_ok: boolean | null; last_sync_at: string | null; message: string | null; keep_alive: boolean; server_awake_needed: boolean };
     daily_report: { last_sent_occurrence: string | null; last_status: string | null };
   };
 }
