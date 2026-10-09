@@ -627,12 +627,30 @@ async def test_scheduled_run_sends_one_combined_alert_email(env):
         logs = (await client.get("/api/email-logs", params={"email_type": "performance_alert"})).json()["items"]
         assert logs[0]["website_name"] == "2 pages"
 
-        # Next day: Home recovers on both devices, Courses still low -> no repeat e-mail for Courses,
-        # one combined "recovered" e-mail for Home
+        # Next day: Home recovers, Courses is still low. Something changed (a recovery), so ONE e-mail
+        # goes out and it still lists Courses (tagged "still below") next to the recovered Home results.
         e.psi.scores[(pages["Home"], "mobile")] = 95
         e.psi.scores[(pages["Home"], "desktop")] = 96
         clock.set_now(ist(2026, 10, 9, 8, 41))
         await client.post("/api/internal/run-scheduled-checks?wait=true", headers=SCHED_HEADERS)
-        assert len([m for m in e.outbox.sent if m["type"] == "performance_alert"]) == 1
-        rec = [m for m in e.outbox.sent if m["type"] == "recovery_notification"]
-        assert len(rec) == 1 and rec[0]["subject"] == "Performance Recovered - Home"
+        alerts = [m for m in e.outbox.sent if m["type"] == "performance_alert"]
+        assert len(alerts) == 2 and not [m for m in e.outbox.sent if m["type"] == "recovery_notification"]
+        day2 = alerts[-1]
+        assert "Courses (Mobile) [still below]" in day2["text"] and "Recovered:" in day2["text"]
+        assert "Still below since 08-Oct" in day2["html"]
+
+        # Day 3: nothing changed (Courses still low) -> no alert e-mail at all; the report shows it.
+        clock.set_now(ist(2026, 10, 10, 8, 41))
+        await client.post("/api/internal/run-scheduled-checks?wait=true", headers=SCHED_HEADERS)
+        assert len([m for m in e.outbox.sent if m["type"] == "performance_alert"]) == 2
+
+        # Day 4: Contact drops -> ONE e-mail listing EVERY page below threshold, the new one tagged NEW.
+        e.psi.scores[(pages["Contact"], "desktop")] = 60
+        clock.set_now(ist(2026, 10, 11, 8, 41))
+        await client.post("/api/internal/run-scheduled-checks?wait=true", headers=SCHED_HEADERS)
+        alerts = [m for m in e.outbox.sent if m["type"] == "performance_alert"]
+        assert len(alerts) == 3
+        day4 = alerts[-1]
+        assert day4["subject"] == "Performance Attention Required - 2 pages"
+        assert "Contact (Desktop) [NEW]" in day4["text"] and "Courses (Mobile) [still below]" in day4["text"]
+        assert day4["text"].index("Contact") < day4["text"].index("Courses")  # new problems first

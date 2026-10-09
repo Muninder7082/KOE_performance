@@ -266,8 +266,9 @@ def alerts_digest_email(attention: list[dict], recovered: list[dict], tz: ZoneIn
         what = pages[0] if len(pages) == 1 else f"{len(pages)} pages"
         subject = f"Performance Attention Required - {what}"
         headline = f"Performance Attention Required — {what}"
-        intro = (f"{len(attention)} result(s) on {len(pages)} page(s) scored below the performance threshold"
-                 + (f"; {len(recovered)} recovered." if recovered else "."))
+        new = sum(1 for i in attention if i.get("new", True))
+        intro = (f"{len(attention)} result(s) on {len(pages)} page(s) are below the performance threshold"
+                 f" ({new} new)" + (f"; {len(recovered)} recovered." if recovered else "."))
     else:
         tone, badge = _TONES["recovered"], "RECOVERED"
         pages = sorted({i["name"] for i in recovered})
@@ -276,6 +277,16 @@ def alerts_digest_email(attention: list[dict], recovered: list[dict], tz: ZoneIn
         headline = f"Performance Recovered — {what}"
         intro = f"{len(recovered)} result(s) are back at or above their threshold."
     date = max(i["result"].tested_at for i in attention + recovered).astimezone(tz).strftime("%d-%b-%Y %H:%M")
+
+    def tag(i: dict) -> str:
+        if i in recovered:
+            return ""
+        if i.get("new", True):
+            return ('<span style="display:inline-block;margin-left:6px;padding:2px 8px;border-radius:999px;'
+                    'background:#dc2626;color:#ffffff;font-size:11px;font-weight:700;">NEW</span>')
+        since = i["since"].astimezone(tz).strftime("%d-%b") if i.get("since") else ""
+        return ('<span style="display:inline-block;margin-left:6px;padding:2px 8px;border-radius:999px;'
+                f'background:#fef3c7;color:#92400e;font-size:11px;font-weight:600;">Still below since {escape(since)}</span>')
 
     def card(i: dict, t: dict) -> str:
         r = i["result"]
@@ -291,7 +302,8 @@ def alerts_digest_email(attention: list[dict], recovered: list[dict], tz: ZoneIn
             '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>'
             f'<td style="{font}font-size:15px;font-weight:700;color:#0f172a;">{escape(i["name"])} '
             '<span style="display:inline-block;margin-left:6px;padding:2px 8px;border-radius:999px;'
-            f'background:#f1f5f9;color:#475569;font-size:11px;font-weight:600;">{escape(r.strategy.capitalize())}</span></td>'
+            f'background:#f1f5f9;color:#475569;font-size:11px;font-weight:600;">{escape(r.strategy.capitalize())}</span>'
+            f'{tag(i)}</td>'
             f'<td align="right" style="{font}white-space:nowrap;">'
             f'<span style="font-size:22px;font-weight:800;color:{t["accent"]};">{escape(_v(r.performance_score))}</span>'
             f'<span style="font-size:13px;color:#64748b;"> / {i["threshold"]}</span></td>'
@@ -365,7 +377,8 @@ def alerts_digest_email(attention: list[dict], recovered: list[dict], tz: ZoneIn
 
     def line(i: dict) -> str:
         r = i["result"]
-        return (f"- {i['name']} ({r.strategy.capitalize()}): {_v(r.performance_score)} / {i['threshold']} | "
+        flag = "" if i in recovered else (" [NEW]" if i.get("new", True) else " [still below]")
+        return (f"- {i['name']} ({r.strategy.capitalize()}){flag}: {_v(r.performance_score)} / {i['threshold']} | "
                 f"LCP {_v(r.lcp_s, ' s')}, CLS {_v(r.cls)}, TBT {_v(r.tbt_ms, ' ms')}, FCP {_v(r.fcp_s, ' s')}, "
                 f"Speed Index {_v(r.speed_index_s, ' s')}\n  {i['url']}\n  {psi_report_link(i['url'], r.strategy)}")
 

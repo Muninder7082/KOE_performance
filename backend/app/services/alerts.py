@@ -41,7 +41,7 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class Notice:
-    kind: str          # "attention" | "recovered"
+    kind: str          # "attention" (new / due to notify) | "ongoing" (still below, already notified) | "recovered"
     alert_id: int
     result_id: int
 
@@ -95,7 +95,7 @@ class AlertService:
                 await session.commit()
                 if self._should_notify(alert, app.alert_mode, now, app.tz):
                     return Notice("attention", alert.id, r.id)
-                return None
+                return Notice("ongoing", alert.id, r.id)  # listed in the e-mail, but does not trigger one
             if alert is not None:
                 was_notified = alert.last_notified_at is not None
                 alert.state = "recovered"
@@ -109,9 +109,11 @@ class AlertService:
 
     # ---- step 2: one combined e-mail ----------------------------------------------------
     async def notify(self, notices: list[Notice]) -> bool | None:
-        """Send one e-mail for all notices. Returns None when there was nothing to send."""
+        """Send one e-mail listing EVERY page/device below threshold in this run (new ones tagged NEW,
+        already-reported ones tagged "still below") plus recoveries. The e-mail is only sent when
+        something changed: a new problem (per the alert mode) or a recovery."""
         notices = [n for n in notices if n is not None]
-        if not notices:
+        if not any(n.kind in ("attention", "recovered") for n in notices):
             return None
         async with self.sf() as session:
             app = await settings_service.load(session)
@@ -122,18 +124,21 @@ class AlertService:
                 if r is None or alert is None:
                     continue
                 items.append({"kind": n.kind, "result": r, "alert": alert, "name": alert.website_name,
-                              "url": alert.url, "threshold": r.threshold})
+                              "url": alert.url, "threshold": r.threshold, "new": n.kind == "attention",
+                              "since": alert.first_detected_at})
             if not items:
                 return None
-            items.sort(key=lambda i: (i["kind"] != "attention", i["name"].lower(), i["result"].strategy != "mobile"))
+            items.sort(key=lambda i: (i["kind"] == "recovered", not i["new"], i["name"].lower(),
+                                      i["result"].strategy != "mobile"))
+            below = [i for i in items if i["kind"] in ("attention", "ongoing")]
             attention = [i for i in items if i["kind"] == "attention"]
             recovered = [i for i in items if i["kind"] == "recovered"]
             base_url = get_settings().public_base_url
-            subject, html, text = email_templates.alerts_digest_email(attention, recovered, app.tz, base_url)
+            subject, html, text = email_templates.alerts_digest_email(below, recovered, app.tz, base_url)
             pages = {i["alert"].website_id for i in items}
             single = items[0]["alert"] if len(pages) == 1 else None
             ok = await self.email.send(OutgoingEmail(
-                PERFORMANCE_ALERT if attention else RECOVERY, list(app.alert_emails), subject, html, text,
+                PERFORMANCE_ALERT if below else RECOVERY, list(app.alert_emails), subject, html, text,
                 website_id=single.website_id if single else None,
                 website_name=single.website_name if single else f"{len(pages)} pages"))
             if ok and attention:
