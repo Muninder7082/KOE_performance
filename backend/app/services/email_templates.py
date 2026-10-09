@@ -223,7 +223,82 @@ _STATUS_PILL = {
 }
 
 
-def daily_report_email(ov, tz: ZoneInfo, now: datetime, base_url: str, attached: bool) -> tuple[str, str, str]:
+def _insight_sections(ins: dict | None, font: str, card: str) -> tuple[str, str]:
+    """HTML + text for: New problems today, Changes since the previous test, Lowest scores."""
+    if not ins:
+        return "", ""
+    td = f'style="padding:9px 10px;border-bottom:1px solid #eef2f7;font-size:13px;color:#0f172a;{font}"'
+    th = (f'style="padding:9px 10px;background:#f8fafc;border-bottom:1px solid #e2e8f0;text-align:left;'
+          f'font-size:12px;font-weight:700;color:#334155;{font}"')
+
+    def device(i):
+        return (f'<span style="display:inline-block;margin-left:6px;padding:1px 7px;border-radius:999px;'
+                f'background:#f1f5f9;color:#475569;font-size:11px;font-weight:600;">{escape(i["device"])}</span>')
+
+    def score(v, threshold):
+        if v is None:
+            return "&mdash;"
+        c = "#16a34a" if v >= 90 else "#f59e0b" if v >= 50 else "#dc2626"
+        return f'<strong style="color:{c};">{v}</strong>'
+
+    def block(icon, title, sub, header, rows, empty):
+        body = (f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+                f'style="border:1px solid #e2e8f0;border-radius:10px;border-collapse:separate;"><tr>{header}</tr>'
+                + "".join(rows) + "</table>") if rows else (
+                f'<div style="padding:12px 14px;background:#f0fdf4;border-radius:10px;color:#166534;'
+                f'font-size:13px;{font}">&#10004;&nbsp; {empty}</div>')
+        return (f'<tr><td {card}><table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">'
+                f'<tr><td style="padding:16px 20px 10px;{font}"><div style="font-size:16px;font-weight:800;color:#0f172a;">'
+                f'{icon}&nbsp; {title}</div><div style="font-size:12px;color:#64748b;">{sub}</div></td></tr>'
+                f'<tr><td style="padding:0 20px 18px;">{body}</td></tr></table></td></tr>'
+                '<tr><td style="height:14px;line-height:14px;font-size:0;">&nbsp;</td></tr>')
+
+    new = ins.get("new_problems", [])
+    new_rows = [f'<tr><td {td}><strong>{escape(i["name"])}</strong>{device(i)}<br>'
+                f'<a href="{escape(i["url"])}" style="color:#1d4ed8;font-size:12px;word-break:break-all;">{escape(i["url"])}</a></td>'
+                f'<td {td}>{score(i["previous"], i["threshold"])} &rarr; {score(i["score"], i["threshold"])}'
+                f' <span style="color:#64748b;font-size:12px;">/ {i["threshold"]}</span></td></tr>' for i in new]
+    changes = ins.get("changes", [])
+    shown = changes[:10]
+    ch_rows = []
+    for i in shown:
+        up = i["delta"] > 0
+        ch_rows.append(
+            f'<tr><td {td}>{escape(i["name"])}{device(i)}</td>'
+            f'<td {td}>{score(i["previous"], i["threshold"])} &rarr; {score(i["score"], i["threshold"])}</td>'
+            f'<td {td}><strong style="color:{"#16a34a" if up else "#dc2626"};">{"&#9650;" if up else "&#9660;"}'
+            f'&nbsp;{abs(i["delta"])}</strong></td></tr>')
+    if len(changes) > len(shown):
+        ch_rows.append(f'<tr><td colspan="3" {td}><span style="color:#64748b;">+ {len(changes) - len(shown)} more '
+                       f'(see the Excel file)</span></td></tr>')
+    low = ins.get("lowest", [])
+    low_rows = [f'<tr><td {td}>{n}</td><td {td}>{escape(i["name"])}{device(i)}</td>'
+                f'<td {td}>{score(i["score"], i["threshold"])} <span style="color:#64748b;font-size:12px;">/ {i["threshold"]}</span></td>'
+                f'<td {td}>{escape(_v(i["lcp"], " s"))}</td></tr>' for n, i in enumerate(low, 1)]
+
+    html = (block("&#128680;", "New problems today", "Pages that dropped below their threshold in today's test",
+                  f'<th {th}>Page</th><th {th}>Previous &rarr; Now</th>', new_rows, "No new problems today.")
+            + block("&#8645;", "Changes since the previous test", "Score difference per page and device (largest drops first)",
+                    f'<th {th}>Page</th><th {th}>Previous &rarr; Now</th><th {th}>Change</th>', ch_rows,
+                    "No score changes since the previous test.")
+            + (block("&#128201;", "Lowest scores", "The three weakest results right now",
+                     f'<th {th}>#</th><th {th}>Page</th><th {th}>Score</th><th {th}>LCP</th>', low_rows, "")
+               if low_rows else ""))
+
+    lines = ["", "New problems today:"]
+    lines += [f"- {i['name']} ({i['device']}): {i['previous'] if i['previous'] is not None else '-'} -> {i['score']}"
+              f" / {i['threshold']}" for i in new] or ["- none"]
+    lines += ["", "Changes since the previous test:"]
+    lines += [f"- {i['name']} ({i['device']}): {i['previous']} -> {i['score']} ({'+' if i['delta'] > 0 else ''}{i['delta']})"
+              for i in changes] or ["- none"]
+    if low:
+        lines += ["", "Lowest scores:"] + [f"{n}. {i['name']} ({i['device']}): {i['score']} / {i['threshold']},"
+                                           f" LCP {_v(i['lcp'], ' s')}" for n, i in enumerate(low, 1)]
+    return html, "\n".join(lines) + "\n"
+
+
+def daily_report_email(ov, tz: ZoneInfo, now: datetime, base_url: str, attached: bool,
+                       insights: dict | None = None) -> tuple[str, str, str]:
     font = "font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif;"
     day = now.astimezone(tz).strftime("%d-%b-%Y")
     subject = f"Daily Website Performance Report - {day}"
@@ -267,6 +342,7 @@ def daily_report_email(ov, tz: ZoneInfo, now: datetime, base_url: str, attached:
               f'padding:11px 20px;color:#ffffff;font-size:14px;font-weight:700;text-decoration:none;{font}">'
               f'&#128202;&nbsp; Open dashboard &rarr;</a></td></tr></table></td>' if base_url else "")
     card = 'style="background:#ffffff;border:1px solid #e2e8f0;border-radius:14px;"'
+    insights_html, insights_text = _insight_sections(insights, font, card)
 
     html = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -293,6 +369,7 @@ def daily_report_email(ov, tz: ZoneInfo, now: datetime, base_url: str, attached:
 </td></tr>
 <tr><td style="height:14px;line-height:14px;font-size:0;">&nbsp;</td></tr>
 
+{insights_html}
 <!-- details -->
 <tr><td {card}>
  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
@@ -323,7 +400,7 @@ def daily_report_email(ov, tz: ZoneInfo, now: datetime, base_url: str, attached:
 
 </table></td></tr></table></body></html>"""
 
-    text = (f"{subject}\n"
+    text = (f"{subject}\n" + insights_text
             + "\nWebsite | URL | Desktop | Mobile | Status | Last Checked\n" + "\n".join(rows_text) + "\n"
             + ("\nThe complete historical workbook website-performance.xlsx is attached.\n" if attached
                else "\nThe Excel workbook could not be attached - see Email Logs.\n")

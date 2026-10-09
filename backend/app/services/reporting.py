@@ -121,3 +121,52 @@ async def overview(session: AsyncSession, tz: ZoneInfo, now: datetime) -> Overvi
     ov.avg_desktop = round(sum(d_scores) / len(d_scores), 1) if d_scores else None
     ov.avg_mobile = round(sum(m_scores) / len(m_scores), 1) if m_scores else None
     return ov
+
+
+
+async def report_insights(session: AsyncSession, tz: ZoneInfo, now: datetime) -> dict:
+    """Extra sections for the daily report e-mail.
+
+    For every active page and device it compares the latest successful test with the one before it:
+      new_problems  latest is today, below threshold, and the previous one was not (or there was none)
+      changes       score difference vs the previous test (largest drops first)
+      lowest        the three lowest latest scores
+    """
+    websites = {w.id: w for w in (await session.scalars(
+        select(MonitoredWebsite).where(MonitoredWebsite.is_active.is_(True)))).all()}
+    if not websites:
+        return {"new_problems": [], "changes": [], "lowest": []}
+    rn = func.row_number().over(
+        partition_by=(PerformanceResult.website_id, PerformanceResult.strategy),
+        order_by=(PerformanceResult.tested_at.desc(), PerformanceResult.id.desc())).label("rn")
+    sub = (select(PerformanceResult.id, rn)
+           .where(PerformanceResult.website_id.in_(list(websites)), PerformanceResult.status == "success",
+                  PerformanceResult.performance_score.is_not(None))
+           .subquery())
+    rows = (await session.execute(
+        select(PerformanceResult, sub.c.rn).join(sub, sub.c.id == PerformanceResult.id).where(sub.c.rn <= 2))).all()
+    pairs: dict[tuple, dict] = {}
+    for r, n in rows:
+        pairs.setdefault((r.website_id, r.strategy), {})["latest" if n == 1 else "previous"] = r
+    today = now.astimezone(tz).date()
+    new_problems, changes, lowest = [], [], []
+    for (wid, strategy), p in pairs.items():
+        w, latest, prev = websites[wid], p.get("latest"), p.get("previous")
+        if latest is None:
+            continue
+        item = {"name": w.name, "url": w.url, "device": strategy.capitalize(), "threshold": w.threshold,
+                "score": latest.performance_score, "lcp": latest.lcp_s,
+                "previous": prev.performance_score if prev else None}
+        lowest.append(item)
+        below = latest.performance_score < w.threshold
+        if below and latest.tested_at.astimezone(tz).date() == today and (
+                prev is None or prev.performance_score >= w.threshold):
+            new_problems.append(item)
+        if prev is not None and prev.performance_score != latest.performance_score:
+            changes.append({**item, "delta": latest.performance_score - prev.performance_score})
+    key = lambda i: (i["name"].lower(), i["device"] != "Desktop")  # noqa: E731
+    return {
+        "new_problems": sorted(new_problems, key=key),
+        "changes": sorted(changes, key=lambda i: (i["delta"], i["name"].lower())),
+        "lowest": sorted(lowest, key=lambda i: (i["score"], i["name"].lower()))[:3],
+    }

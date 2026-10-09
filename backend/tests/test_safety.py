@@ -688,3 +688,37 @@ async def test_excel_report_column_has_per_test_signed_link(env, monkeypatch):
         rid, sig = path.rsplit("/", 2)[-2:]
         assert (await client.get(f"/api/public/report/{int(rid) + 1}/{sig}")).status_code == 404
         assert (await client.get(f"/api/public/report/{rid}/{'0' * 24}")).status_code == 404
+
+
+async def test_daily_report_shows_new_problems_changes_and_lowest(env):
+    e = env
+    clock.set_now(ist(2026, 10, 8, 8, 0))
+    home, about = "https://h.example.com/", "https://a.example.com/"
+    e.psi.scores[(home, "desktop")] = 96
+    e.psi.scores[(home, "mobile")] = 93
+    e.psi.scores[(about, "desktop")] = 98
+    e.psi.scores[(about, "mobile")] = 87
+    async with running_app(e) as (app, client):
+        await login(client)
+        await client.post("/api/websites", json={"name": "Home", "url": home})
+        await client.post("/api/websites", json={"name": "About", "url": about})
+        clock.set_now(ist(2026, 10, 8, 8, 41))
+        await client.post("/api/internal/run-scheduled-checks?wait=true", headers=SCHED_HEADERS)
+        # Day 2: Home desktop drops below 90 (new problem), About mobile drops further, Home mobile improves
+        e.psi.scores[(home, "desktop")] = 84
+        e.psi.scores[(about, "mobile")] = 84
+        e.psi.scores[(home, "mobile")] = 95
+        clock.set_now(ist(2026, 10, 9, 8, 41))
+        await client.post("/api/internal/run-scheduled-checks?wait=true", headers=SCHED_HEADERS)
+        rep = [m for m in e.outbox.sent if m["type"] == "daily_report"][-1]
+        text = rep["text"]
+        new_part = text.split("New problems today:")[1].split("Changes since")[0]
+        assert "Home (Desktop): 96 -> 84" in new_part and "About" not in new_part  # About was already below
+        changes = text.split("Changes since the previous test:")[1].split("Lowest scores:")[0]
+        lines = [l for l in changes.splitlines() if l.startswith("- ")]
+        assert lines[0] == "- Home (Desktop): 96 -> 84 (-12)"            # largest drop first
+        assert "- About (Mobile): 87 -> 84 (-3)" in lines and "- Home (Mobile): 93 -> 95 (+2)" in lines
+        lowest = text.split("Lowest scores:")[1].split("Website | URL")[0]
+        assert "1. About (Mobile): 84" in lowest or "1. Home (Desktop): 84" in lowest
+        assert "New problems today" in rep["html"] and "Changes since the previous test" in rep["html"]
+        assert "Lowest scores" in rep["html"] and "Summary" not in rep["html"]

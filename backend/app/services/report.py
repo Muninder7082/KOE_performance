@@ -33,6 +33,7 @@ class ReportService:
             app = await settings_service.load(session)
             now = now_utc()
             ov = await reporting.overview(session, app.tz, now)
+            insights = await reporting.report_insights(session, app.tz, now)
         attachments: list[Attachment] = []
         filename = get_settings().excel_filename
         with tempfile.TemporaryDirectory() as tmp:
@@ -47,6 +48,6 @@ class ReportService:
             except Exception as exc:  # noqa: BLE001
                 log.error("Could not load workbook for the daily report: %s", exc)
         subject, html, text = email_templates.daily_report_email(
-            ov, app.tz, now, get_settings().public_base_url, attached=bool(attachments))
+            ov, app.tz, now, get_settings().public_base_url, attached=bool(attachments), insights=insights)
         return await self.email.send(OutgoingEmail(DAILY_REPORT, list(app.report_emails), subject, html, text,
                                                    attachments=attachments))
