@@ -199,44 +199,173 @@ def recovery_email(r: PerformanceResult, website_name: str, url: str, threshold:
     return subject, html, text
 
 
+def _score_ring(r, threshold: int) -> str:
+    """Score inside a coloured circle (green >= 90, orange 50-89, red < 50)."""
+    font = "font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif;"
+    if r is None:
+        value, ring, color = "&mdash;", "#cbd5e1", "#64748b"
+    elif r.status != "success" or r.performance_score is None:
+        value, ring, color = "ERR", "#dc2626", "#dc2626"
+    else:
+        s = r.performance_score
+        value = escape(str(s))
+        ring = "#16a34a" if s >= 90 else "#f59e0b" if s >= 50 else "#dc2626"
+        color = "#0f172a"
+    return (f'<div style="width:34px;height:34px;line-height:34px;border-radius:50%;border:3px solid {ring};'
+            f'text-align:center;margin:0 auto;font-size:13px;font-weight:700;color:{color};{font}">{value}</div>')
+
+
+_STATUS_PILL = {
+    "GOOD": ("#dcfce7", "#15803d", "&#10004;&nbsp;GOOD"),
+    "ATTENTION": ("#fef3c7", "#b45309", "&#9888;&nbsp;ATTENTION"),
+    "FAILED": ("#fee2e2", "#b91c1c", "&#10006;&nbsp;FAILED"),
+    "PENDING": ("#f1f5f9", "#475569", "PENDING"),
+}
+
+
 def daily_report_email(ov, tz: ZoneInfo, now: datetime, base_url: str, attached: bool) -> tuple[str, str, str]:
+    font = "font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif;"
     day = now.astimezone(tz).strftime("%d-%b-%Y")
     subject = f"Daily Website Performance Report - {day}"
-    summary = [
-        ("Total Websites", ov.total_websites), ("Active Websites", ov.active_websites),
-        ("Successful Tests (today)", ov.successful_today), ("Failed Tests (today)", ov.failed_today),
-        ("Average Desktop Performance", _v(ov.avg_desktop)), ("Average Mobile Performance", _v(ov.avg_mobile)),
-        ("Pages Requiring Attention", ov.attention + ov.failed_websites),
-    ]
-    cards = "".join(
-        f'<tr><td style="padding:5px 14px 5px 0;color:#475569">{escape(k)}</td><td style="font-weight:600">{escape(str(v))}</td></tr>'
-        for k, v in summary)
-    th = 'style="text-align:left;padding:7px 9px;background:#0f2b46;color:#fff;font-size:12px"'
-    td = 'style="padding:7px 9px;border-bottom:1px solid #e2e8f0;font-size:13px"'
-    rows_html, rows_text = [], []
+    attention_total = ov.attention + ov.failed_websites
+
+    def tile(icon: str, value, label: str, bg: str, fg: str, width: str) -> str:
+        return (f'<td width="{width}" valign="top" style="padding:5px;">'
+                f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+                f'style="background:{bg};border-radius:10px;"><tr>'
+                f'<td width="34" valign="top" style="padding:14px 0 14px 14px;font-size:20px;line-height:24px;color:{fg};">{icon}</td>'
+                f'<td style="padding:12px 12px 12px 8px;{font}">'
+                f'<div style="font-size:24px;line-height:28px;font-weight:800;color:#0f172a;">{escape(str(value))}</div>'
+                f'<div style="font-size:12px;line-height:16px;color:#475569;">{label}</div></td>'
+                f'</tr></table></td>')
+
+    row1 = (tile("&#127760;", ov.total_websites, "Total Websites", "#eff6ff", "#2563eb", "25%")
+            + tile("&#9989;", ov.active_websites, "Active Websites", "#ecfdf5", "#16a34a", "25%")
+            + tile("&#129514;", ov.successful_today, "Successful Tests<br>(today)", "#f5f3ff", "#7c3aed", "25%")
+            + tile("&#10060;", ov.failed_today, "Failed Tests<br>(today)", "#fef2f2", "#dc2626", "25%"))
+    row2 = (tile("&#128187;", _v(ov.avg_desktop), "Average Desktop<br>Performance", "#fff7ed", "#ea580c", "33%")
+            + tile("&#128241;", _v(ov.avg_mobile), "Average Mobile<br>Performance", "#eff6ff", "#2563eb", "33%")
+            + tile("&#9888;&#65039;", attention_total, "Pages Requiring<br>Attention", "#fef2f2", "#dc2626", "34%"))
+
+    th = (f'style="padding:10px 8px;background:#f8fafc;border-bottom:1px solid #e2e8f0;text-align:left;'
+          f'font-size:12px;font-weight:700;color:#334155;{font}"')
+    thc = th.replace("text-align:left", "text-align:center")
+    td = f'style="padding:10px 8px;border-bottom:1px solid #eef2f7;font-size:13px;color:#0f172a;{font}"'
+    tdc = td.replace("padding:10px 8px;", "padding:10px 8px;text-align:center;")
+    rows_html, rows_text, n = [], [], 0
     for row in ov.rows:
         w = row["website"]
         if not w.is_active:
             continue
+        n += 1
         d, m = row["desktop"], row["mobile"]
+        bg, fg, label = _STATUS_PILL.get(row["status"], _STATUS_PILL["PENDING"])
+        last = row["last_checked"].astimezone(tz).strftime("%d-%b-%Y<br>%H:%M") if row["last_checked"] else "Never"
+        rows_html.append(
+            f'<tr><td {td}>{n}</td><td {td}>{escape(w.name)}</td>'
+            f'<td {td}><a href="{escape(w.url)}" style="color:#1d4ed8;text-decoration:underline;word-break:break-all;">'
+            f'{escape(w.url)}</a>&nbsp;<span style="color:#1d4ed8;">&#8599;</span></td>'
+            f'<td {tdc}>{_score_ring(d, w.threshold)}</td><td {tdc}>{_score_ring(m, w.threshold)}</td>'
+            f'<td {td}><span style="display:inline-block;padding:4px 9px;border-radius:6px;background:{bg};color:{fg};'
+            f'font-size:11px;font-weight:700;white-space:nowrap;">{label}</span></td>'
+            f'<td {td}><span style="font-size:12px;color:#334155;white-space:nowrap;">{last}</span></td></tr>')
         ds = _v(d.performance_score) if d and d.status == "success" else ("ERR" if d else "—")
         ms = _v(m.performance_score) if m and m.status == "success" else ("ERR" if m else "—")
-        last = row["last_checked"].astimezone(tz).strftime("%d-%b-%Y %H:%M") if row["last_checked"] else "Never"
-        color = _STATUS_COLORS.get(row["status"], "#475569")
-        rows_html.append(
-            f"<tr><td {td}>{escape(w.name)}</td><td {td}><a href=\"{escape(w.url)}\">{escape(w.url)}</a></td>"
-            f"<td {td}>{escape(ds)}</td><td {td}>{escape(ms)}</td>"
-            f"<td {td}><strong style=\"color:{color}\">{escape(row['status'])}</strong></td><td {td}>{escape(last)}</td></tr>")
-        rows_text.append(f"{w.name} | {w.url} | {ds} | {ms} | {row['status']} | {last}")
-    table = (f"<table style=\"border-collapse:collapse;width:100%\"><tr><th {th}>Website</th><th {th}>URL</th>"
-             f"<th {th}>Desktop</th><th {th}>Mobile</th><th {th}>Status</th><th {th}>Last Checked</th></tr>"
-             + ("".join(rows_html) or f"<tr><td {td} colspan=6>No active websites.</td></tr>") + "</table>")
-    note = ("<p style=\"color:#475569\">The complete historical workbook <strong>website-performance.xlsx</strong> is attached.</p>"
-            if attached else "<p style=\"color:#b91c1c\">The Excel workbook could not be attached — see Email Logs.</p>")
-    body = f"<h3 style=\"font-size:15px;margin:0 0 6px\">Summary</h3><table>{cards}</table><h3 style=\"font-size:15px;margin:18px 0 6px\">Websites</h3>{table}{note}"
+        rows_text.append(f"{w.name} | {w.url} | {ds} | {ms} | {row['status']} | {last.replace('<br>', ' ')}")
+    if not rows_html:
+        rows_html.append(f'<tr><td colspan="7" {td}>No active websites.</td></tr>')
+
+    dot = 'display:inline-block;width:8px;height:8px;border-radius:4px;margin:0 4px 0 10px;'
+    legend = (f'<span style="font-size:11px;color:#475569;{font}"><span style="{dot}background:#16a34a;"></span>Good (&ge; 90)'
+              f'<span style="{dot}background:#f59e0b;"></span>Needs Attention (50 - 89)'
+              f'<span style="{dot}background:#dc2626;"></span>Poor (&lt; 50)</span>')
+    note = ('The complete historical workbook <strong style="color:#1d4ed8;">website-performance.xlsx</strong> is attached.'
+            if attached else '<span style="color:#b91c1c;">The Excel workbook could not be attached &mdash; see Email Logs.</span>')
+    button = (f'<td align="right"><table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>'
+              f'<td bgcolor="#1d4ed8" style="border-radius:8px;"><a href="{escape(base_url)}" style="display:block;'
+              f'padding:11px 20px;color:#ffffff;font-size:14px;font-weight:700;text-decoration:none;{font}">'
+              f'&#128202;&nbsp; Open dashboard &rarr;</a></td></tr></table></td>' if base_url else "")
+    card = 'style="background:#ffffff;border:1px solid #e2e8f0;border-radius:14px;"'
+
+    html = f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light"><meta name="supported-color-schemes" content="light">
+<title>{escape(subject)}</title></head>
+<body style="margin:0;padding:0;background:#eef2f7;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#eef2f7;">
+<tr><td align="center" style="padding:20px 10px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:720px;">
+
+<!-- header -->
+<tr><td bgcolor="#1d4ed8" style="background:#1d4ed8;background-image:linear-gradient(135deg,#2563eb,#1e40af);border-radius:14px;padding:22px 24px;">
+ <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+  <td width="58" valign="middle"><div style="width:46px;height:46px;line-height:46px;border-radius:12px;background:#3b82f6;text-align:center;font-size:24px;">&#128202;</div></td>
+  <td valign="middle" style="{font}">
+   <div style="font-size:22px;line-height:28px;font-weight:800;color:#ffffff;">Daily Website Performance Report</div>
+   <div style="font-size:14px;color:#dbeafe;">{escape(day)}</div></td>
+  <td align="right" valign="middle">
+   <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="background:#2b5fd9;border:1px solid #6b93ee;border-radius:10px;"><tr>
+    <td style="padding:8px 12px;font-size:16px;color:#ffffff;">&#128197;</td>
+    <td style="padding:8px 14px 8px 0;{font}"><div style="font-size:13px;font-weight:700;color:#ffffff;">{escape(day)}</div>
+     <div style="font-size:11px;color:#dbeafe;">Daily Report</div></td></tr></table></td>
+ </tr></table>
+</td></tr>
+<tr><td style="height:14px;line-height:14px;font-size:0;">&nbsp;</td></tr>
+
+<!-- summary -->
+<tr><td {card}>
+ <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr><td style="padding:18px 20px 6px;{font}">
+   <div style="font-size:16px;font-weight:800;color:#0f172a;">&#128196;&nbsp; Summary</div>
+   <div style="font-size:12px;color:#64748b;">Overview of today's website performance tests</div></td></tr>
+  <tr><td style="padding:6px 15px 4px;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>{row1}</tr></table></td></tr>
+  <tr><td style="padding:0 15px 15px;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>{row2}</tr></table></td></tr>
+ </table>
+</td></tr>
+<tr><td style="height:14px;line-height:14px;font-size:0;">&nbsp;</td></tr>
+
+<!-- details -->
+<tr><td {card}>
+ <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr><td style="padding:18px 20px 10px;{font}">
+   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+    <td style="{font}"><div style="font-size:16px;font-weight:800;color:#0f172a;">&#9776;&nbsp; Website Details</div>
+     <div style="font-size:12px;color:#64748b;">Performance results for all monitored pages</div></td>
+    <td align="right" valign="bottom">{legend}</td></tr></table></td></tr>
+  <tr><td style="padding:0 20px;">
+   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #e2e8f0;border-radius:10px;border-collapse:separate;">
+    <tr><th {th}>#</th><th {th}>Website</th><th {th}>URL</th><th {thc}>Desktop</th><th {thc}>Mobile</th><th {th}>Status</th><th {th}>Last Checked</th></tr>
+    {''.join(rows_html)}
+   </table></td></tr>
+  <tr><td style="padding:14px 20px 20px;">
+   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#eff6ff;border-radius:10px;"><tr>
+    <td style="padding:12px 14px;font-size:13px;color:#1e3a8a;{font}">&#128206;&nbsp; {note}</td></tr></table></td></tr>
+ </table>
+</td></tr>
+<tr><td style="height:14px;line-height:14px;font-size:0;">&nbsp;</td></tr>
+
+<!-- footer -->
+<tr><td {card}>
+ <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+  <td style="padding:16px 20px;font-size:13px;color:#475569;{font}">&#9993;&nbsp; Sent by Website Performance Monitor</td>
+  {button.replace('<td align="right">', '<td align="right" style="padding:12px 20px;">')}
+ </tr></table>
+</td></tr>
+
+</table></td></tr></table></body></html>"""
+
+    summary = [
+        ("Total Websites", ov.total_websites), ("Active Websites", ov.active_websites),
+        ("Successful Tests (today)", ov.successful_today), ("Failed Tests (today)", ov.failed_today),
+        ("Average Desktop Performance", _v(ov.avg_desktop)), ("Average Mobile Performance", _v(ov.avg_mobile)),
+        ("Pages Requiring Attention", attention_total),
+    ]
     text = (f"{subject}\n\n" + "\n".join(f"{k}: {v}" for k, v in summary)
-            + "\n\nWebsite | URL | Desktop | Mobile | Status | Last Checked\n" + "\n".join(rows_text) + "\n")
-    return subject, _wrap(subject, body, _footer(base_url)), text
+            + "\n\nWebsite | URL | Desktop | Mobile | Status | Last Checked\n" + "\n".join(rows_text) + "\n"
+            + ("\nThe complete historical workbook website-performance.xlsx is attached.\n" if attached
+               else "\nThe Excel workbook could not be attached - see Email Logs.\n")
+            + (f"\nDashboard: {base_url}\n" if base_url else ""))
+    return subject, html, text
 
 
 def test_email(base_url: str) -> tuple[str, str, str]:
