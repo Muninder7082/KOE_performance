@@ -598,3 +598,41 @@ async def test_settings_change_moves_cron_job_and_keep_alive_stops_after_report(
             assert len(pings()) == n
             body = (await client.get("/api/settings")).text
             assert "cj-secret-key" not in body
+
+
+async def test_scheduled_run_sends_one_combined_alert_email(env):
+    e = env
+    clock.set_now(ist(2026, 10, 8, 8, 0))
+    pages = {"Home": "https://h.example.com/", "Courses": "https://c.example.com/", "Contact": "https://k.example.com/"}
+    e.psi.scores[(pages["Home"], "mobile")] = 82
+    e.psi.scores[(pages["Home"], "desktop")] = 85
+    e.psi.scores[(pages["Courses"], "mobile")] = 70
+    async with running_app(e) as (app, client):
+        await login(client)
+        for name, url in pages.items():
+            assert (await client.post("/api/websites", json={"name": name, "url": url})).status_code == 201
+        clock.set_now(ist(2026, 10, 8, 8, 41))
+        r = await client.post("/api/internal/run-scheduled-checks?wait=true", headers=SCHED_HEADERS)
+        assert r.json()["websites_due"] == 3
+        alerts = [m for m in e.outbox.sent if m["type"] == "performance_alert"]
+        assert len(alerts) == 1                                   # ONE e-mail for the whole run
+        a = alerts[0]
+        assert a["subject"] == "Performance Attention Required - 2 pages"
+        assert a["text"].count("(Mobile)") == 2 and a["text"].count("(Desktop)") == 1
+        assert "Contact" not in a["text"]                         # page at/above threshold is not listed
+        assert "Home" in a["html"] and "Courses" in a["html"]
+        # the report still goes out after the alert e-mail
+        types = [m["type"] for m in e.outbox.sent]
+        assert types.index("performance_alert") < types.index("daily_report")
+        logs = (await client.get("/api/email-logs", params={"email_type": "performance_alert"})).json()["items"]
+        assert logs[0]["website_name"] == "2 pages"
+
+        # Next day: Home recovers on both devices, Courses still low -> no repeat e-mail for Courses,
+        # one combined "recovered" e-mail for Home
+        e.psi.scores[(pages["Home"], "mobile")] = 95
+        e.psi.scores[(pages["Home"], "desktop")] = 96
+        clock.set_now(ist(2026, 10, 9, 8, 41))
+        await client.post("/api/internal/run-scheduled-checks?wait=true", headers=SCHED_HEADERS)
+        assert len([m for m in e.outbox.sent if m["type"] == "performance_alert"]) == 1
+        rec = [m for m in e.outbox.sent if m["type"] == "recovery_notification"]
+        assert len(rec) == 1 and rec[0]["subject"] == "Performance Recovered - Home"

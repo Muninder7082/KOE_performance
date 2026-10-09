@@ -68,7 +68,9 @@ class PerformanceMonitoringService:
 
     async def test_website(self, website_id: int, strategies: list[str], trigger: str, *,
                            run_id: str | None = None, progress: Progress | None = None,
-                           sync_excel: bool = True) -> WebsiteRunOutcome:
+                           sync_excel: bool = True, collect_alerts: list | None = None) -> WebsiteRunOutcome:
+        """collect_alerts: a scheduled run passes a list and sends ONE e-mail for all pages at the end;
+        a manual test (None) e-mails this page's alerts right away (Desktop + Mobile together)."""
         async with self.lock_for(website_id):
             async with self.sf() as session:
                 w = await session.get(MonitoredWebsite, website_id)
@@ -85,11 +87,20 @@ class PerformanceMonitoringService:
                     await session.commit()
                 rows = [await session.get(PerformanceResult, i) for i in ids]
             ok = sum(1 for r in rows if r and r.status == "success")
+            notices = []
             for rid in ids:
                 try:
-                    await self.alerts.process(rid)
+                    notices.append(await self.alerts.process(rid))
                 except Exception:  # noqa: BLE001 - alerting must never break monitoring
                     log.exception("Alert processing failed for result %s", rid)
+            notices = [n for n in notices if n is not None]
+            if collect_alerts is not None:
+                collect_alerts.extend(notices)
+            elif notices:
+                try:
+                    await self.alerts.notify(notices)
+                except Exception:  # noqa: BLE001
+                    log.exception("Alert e-mail failed")
             excel_error = None
             if sync_excel:
                 await self._progress(progress, "Updating Excel...")

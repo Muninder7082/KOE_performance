@@ -199,6 +199,7 @@ class SchedulerService:
             summary["websites_due"] = len(due)
             sem = asyncio.Semaphore(get_settings().pagespeed_concurrency)
             processed = 0
+            alert_notices: list = []  # one combined alert e-mail for the whole run
             flush_lock = asyncio.Lock()
 
             async def handle(website_id: int, occ: datetime) -> None:
@@ -212,7 +213,8 @@ class SchedulerService:
                         return
                     try:
                         out = await self.monitoring.test_website(website_id, ["desktop", "mobile"], "scheduled",
-                                                                 run_id=run_id, sync_excel=False)
+                                                                 run_id=run_id, sync_excel=False,
+                                                                 collect_alerts=alert_notices)
                         summary["tests_succeeded"] += out.succeeded
                         summary["tests_failed"] += out.failed
                     except WebsiteNotFound:
@@ -229,6 +231,12 @@ class SchedulerService:
                     summary["errors"].append(f"website {wid}: {type(res).__name__}: {res}")
             if due:
                 await self._sync_excel(summary)
+            if alert_notices:
+                try:
+                    await self.monitoring.alerts.notify(alert_notices)
+                except Exception as exc:  # noqa: BLE001 - alerts stay open and are retried next run
+                    log.exception("Combined alert e-mail failed")
+                    summary["errors"].append(f"Alert e-mail: {exc}")
             if lost.is_set():
                 summary["status"] = "failed"
                 summary["errors"].append("Scheduler lease lost; remaining websites run on the next call")

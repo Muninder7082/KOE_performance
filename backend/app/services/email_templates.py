@@ -243,3 +243,137 @@ def test_email(base_url: str) -> tuple[str, str, str]:
     subject = "Test Email - Website Performance Monitor"
     body = "<p>This is a test e-mail. Your e-mail settings are working.</p>"
     return subject, _wrap(subject, body, _footer(base_url)), "This is a test e-mail. Your e-mail settings are working.\n"
+
+
+# ---- One combined alert e-mail for a whole run ----------------------------------------------
+def alerts_digest_email(attention: list[dict], recovered: list[dict], tz: ZoneInfo,
+                        base_url: str) -> tuple[str, str, str]:
+    """One e-mail for all pages of a run. Items: {"result", "name", "url", "threshold"}.
+
+    A single page/device keeps the detailed card layout; several are listed one card each.
+    """
+    if len(attention) == 1 and not recovered:
+        i = attention[0]
+        return alert_email(i["result"], i["name"], i["url"], i["threshold"], tz, base_url)
+    if len(recovered) == 1 and not attention:
+        i = recovered[0]
+        return recovery_email(i["result"], i["name"], i["url"], i["threshold"], tz, base_url)
+
+    font = "font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif;"
+    if attention:
+        tone, badge = _TONES["attention"], "ATTENTION REQUIRED"
+        pages = sorted({i["name"] for i in attention})
+        what = pages[0] if len(pages) == 1 else f"{len(pages)} pages"
+        subject = f"Performance Attention Required - {what}"
+        headline = f"Performance Attention Required — {what}"
+        intro = (f"{len(attention)} result(s) on {len(pages)} page(s) scored below the performance threshold"
+                 + (f"; {len(recovered)} recovered." if recovered else "."))
+    else:
+        tone, badge = _TONES["recovered"], "RECOVERED"
+        pages = sorted({i["name"] for i in recovered})
+        what = pages[0] if len(pages) == 1 else f"{len(pages)} pages"
+        subject = f"Performance Recovered - {what}"
+        headline = f"Performance Recovered — {what}"
+        intro = f"{len(recovered)} result(s) are back at or above their threshold."
+    date = max(i["result"].tested_at for i in attention + recovered).astimezone(tz).strftime("%d-%b-%Y %H:%M")
+
+    def card(i: dict, t: dict) -> str:
+        r = i["result"]
+        metrics = (f"LCP {escape(_v(r.lcp_s, ' s'))} &middot; CLS {escape(_v(r.cls))} &middot; "
+                   f"TBT {escape(_v(r.tbt_ms, ' ms'))} &middot; FCP {escape(_v(r.fcp_s, ' s'))} &middot; "
+                   f"Speed Index {escape(_v(r.speed_index_s, ' s'))}")
+        psi = escape(psi_report_link(i["url"], r.strategy))
+        return (
+            '<tr><td style="padding:0 0 10px;">'
+            '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+            f'style="border:1px solid #e2e8f0;border-left:4px solid {t["accent"]};border-radius:8px;"><tr>'
+            f'<td style="padding:12px 14px;{font}">'
+            '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>'
+            f'<td style="{font}font-size:15px;font-weight:700;color:#0f172a;">{escape(i["name"])} '
+            '<span style="display:inline-block;margin-left:6px;padding:2px 8px;border-radius:999px;'
+            f'background:#f1f5f9;color:#475569;font-size:11px;font-weight:600;">{escape(r.strategy.capitalize())}</span></td>'
+            f'<td align="right" style="{font}white-space:nowrap;">'
+            f'<span style="font-size:22px;font-weight:800;color:{t["accent"]};">{escape(_v(r.performance_score))}</span>'
+            f'<span style="font-size:13px;color:#64748b;"> / {i["threshold"]}</span></td>'
+            '</tr></table>'
+            f'<div style="padding-top:4px;font-size:13px;"><a href="{escape(i["url"])}" '
+            f'style="color:#1d4ed8;text-decoration:underline;word-break:break-all;">{escape(i["url"])}</a></div>'
+            f'<div style="padding-top:6px;font-size:12px;color:#475569;">{metrics}</div>'
+            f'<div style="padding-top:8px;font-size:13px;"><a href="{psi}" '
+            'style="color:#1d4ed8;font-weight:600;text-decoration:none;">&#8599; Review in PageSpeed Insights</a></div>'
+            '</td></tr></table></td></tr>')
+
+    def section(title: str, items: list[dict], t: dict) -> str:
+        if not items:
+            return ""
+        return (f'<tr><td style="padding:18px 24px 8px;{font}font-size:14px;font-weight:700;color:{t["accent"]};">'
+                f'{escape(title)} ({len(items)})</td></tr><tr><td style="padding:0 24px;">'
+                '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">'
+                + "".join(card(i, t) for i in items) + "</table></td></tr>")
+
+    button = ""
+    if base_url:
+        button = ('<tr><td style="padding:14px 24px 4px;">'
+                  '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>'
+                  '<td align="center" bgcolor="#1d4ed8" style="border-radius:10px;">'
+                  f'<a href="{escape(base_url)}" style="display:block;padding:14px 18px;color:#ffffff;font-size:15px;'
+                  f'font-weight:700;text-decoration:none;border-radius:10px;{font}">&#8599;&nbsp; Open dashboard</a></td>'
+                  '</tr></table></td></tr>')
+
+    html = (
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        '<meta name="color-scheme" content="light"><meta name="supported-color-schemes" content="light">'
+        f'<title>{escape(subject)}</title></head><body style="margin:0;padding:0;background:#eef2f7;">'
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#eef2f7;">'
+        '<tr><td align="center" style="padding:24px 12px;">'
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+        'style="max-width:560px;background:#ffffff;border:1px solid #e2e8f0;border-radius:14px;">'
+        # header
+        '<tr><td style="padding:18px 24px;border-bottom:1px solid #eef2f7;">'
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>'
+        f'<td style="{font}font-size:15px;font-weight:700;color:#0f172a;">'
+        '<span style="display:inline-block;width:22px;height:22px;line-height:22px;text-align:center;border-radius:6px;'
+        'background:#1d4ed8;color:#ffffff;font-size:13px;font-weight:800;vertical-align:middle;">W</span>'
+        '<span style="vertical-align:middle;">&nbsp;Website Performance Monitor</span></td>'
+        f'<td align="right" style="{font}"><span style="display:inline-block;padding:5px 12px;border-radius:999px;'
+        f'background:{tone["badge_bg"]};color:{tone["accent"]};font-size:11px;font-weight:700;letter-spacing:.4px;">'
+        f'{tone["icon"]}&nbsp;{badge}</span></td></tr></table></td></tr>'
+        # headline box
+        '<tr><td style="padding:20px 24px 0;">'
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+        f'style="background:{tone["box_bg"]};border:1px solid {tone["box_border"]};border-radius:10px;"><tr>'
+        '<td width="52" valign="top" style="padding:16px 0 16px 16px;">'
+        '<div style="width:36px;height:36px;line-height:36px;border-radius:18px;'
+        f'background:{tone["accent"]};color:#ffffff;text-align:center;font-size:20px;font-weight:800;{font}">'
+        f'{tone["symbol"]}</div></td>'
+        f'<td style="padding:16px 16px 16px 12px;{font}">'
+        f'<div style="font-size:19px;line-height:25px;font-weight:700;color:#0f172a;">{escape(headline)}</div>'
+        f'<div style="padding-top:6px;font-size:14px;color:#334155;">{escape(intro)}</div>'
+        f'<div style="padding-top:4px;font-size:12px;color:#64748b;">Run: {escape(date)}</div>'
+        '</td></tr></table></td></tr>'
+        + section("Below threshold", attention, _TONES["attention"])
+        + section("Recovered", recovered, _TONES["recovered"])
+        + button +
+        # footer
+        '<tr><td style="padding:16px 24px 20px;">'
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+        'style="border-top:1px solid #eef2f7;"><tr>'
+        f'<td style="padding-top:14px;color:#64748b;font-size:12px;{font}">Sent by Website Performance Monitor</td>'
+        '</tr></table></td></tr>'
+        '</table></td></tr></table></body></html>')
+
+    def line(i: dict) -> str:
+        r = i["result"]
+        return (f"- {i['name']} ({r.strategy.capitalize()}): {_v(r.performance_score)} / {i['threshold']} | "
+                f"LCP {_v(r.lcp_s, ' s')}, CLS {_v(r.cls)}, TBT {_v(r.tbt_ms, ' ms')}, FCP {_v(r.fcp_s, ' s')}, "
+                f"Speed Index {_v(r.speed_index_s, ' s')}\n  {i['url']}\n  {psi_report_link(i['url'], r.strategy)}")
+
+    text = f"{headline}\n{intro}\nRun: {date}\n"
+    if attention:
+        text += "\nBelow threshold:\n" + "\n".join(line(i) for i in attention) + "\n"
+    if recovered:
+        text += "\nRecovered:\n" + "\n".join(line(i) for i in recovered) + "\n"
+    if base_url:
+        text += f"\nDashboard: {base_url}\n"
+    return subject, html, text
