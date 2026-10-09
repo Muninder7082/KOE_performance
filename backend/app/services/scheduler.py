@@ -43,6 +43,21 @@ class SchedulerService:
         self.report = report
         self._tasks: set[asyncio.Task] = set()
         self._report_attempts: dict[datetime, int] = {}
+        # In-memory state so idle ticks (every minute) never touch the database. This lets the
+        # free Neon database scale to zero between runs instead of staying awake 24x7.
+        self._settings_cache: settings_service.AppSettings | None = None
+        self._done_occurrence: datetime | None = None
+
+    def invalidate(self) -> None:
+        """Called when Settings change: forget the cached schedule."""
+        self._settings_cache = None
+        self._done_occurrence = None
+
+    async def _cached_occurrence(self, now: datetime) -> datetime | None:
+        if self._settings_cache is None:
+            async with self.sf() as session:
+                self._settings_cache = await settings_service.load(session)
+        return global_schedule.compute(self._settings_cache, now).current_occurrence
 
     # ---- what is due -------------------------------------------------------------
     async def _occurrence(self, now: datetime) -> datetime | None:
@@ -89,6 +104,10 @@ class SchedulerService:
         return bool(row and row.locked_until and row.locked_until > now_utc())
 
     async def trigger(self, trigger: str, wait: bool = False) -> dict:
+        occ = await self._cached_occurrence(now_utc())
+        if occ is None or occ == self._done_occurrence:
+            # Nothing due, or this run already finished: answer without any database query.
+            return {"status": "idle", "websites_due": 0, "report_sent": None}
         if await self.is_running():
             return {"status": "already_running"}
         run_id = f"run-{uuid.uuid4().hex[:12]}"
@@ -212,6 +231,7 @@ class SchedulerService:
             else:
                 await self._send_report_if_due(summary)
                 await self._purge_reports_daily()
+                await self._remember_if_finished()
         except Exception as exc:  # noqa: BLE001
             log.exception("Scheduled cycle %s failed", run_id)
             summary["status"] = "failed"
@@ -254,6 +274,16 @@ class SchedulerService:
                 await session.commit()
         except Exception:  # noqa: BLE001 - housekeeping only
             log.exception("Report purge failed")
+
+    async def _remember_if_finished(self) -> None:
+        """Mark the current run as finished in memory once every page is tested and the
+        report is sent (or given up), so the following idle ticks skip the database."""
+        now = now_utc()
+        occ = await self._occurrence(now)
+        if occ is None:
+            return
+        if not await self.due_websites(now) and await self.report_due(now) is None:
+            self._done_occurrence = occ
 
     async def abort_stale_runs(self) -> int:
         """At startup: runs left 'running' by a previous container can never finish."""

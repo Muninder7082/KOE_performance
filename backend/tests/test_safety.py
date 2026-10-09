@@ -479,3 +479,36 @@ async def test_brevo_provider_sends_over_https(env, monkeypatch):
         assert b["attachment"][0]["name"] == "website-performance.xlsx"
         assert _b64.b64decode(b["attachment"][0]["content"]) == b"PK-data"
         assert svc.status()["configured"] is True
+
+
+async def test_idle_scheduler_ticks_do_not_query_the_database(env):
+    from sqlalchemy import event
+
+    from app import db
+
+    clock.set_now(ist(2026, 10, 8, 8, 0))
+    async with running_app(env) as (app, client):
+        await login(client)
+        await client.post("/api/websites", json={"name": "A", "url": "https://a.example.com/"})
+        clock.set_now(ist(2026, 10, 8, 8, 41))
+        r = await client.post("/api/internal/run-scheduled-checks?wait=true", headers=SCHED_HEADERS)
+        assert r.json()["websites_due"] == 1 and r.json()["report_sent"] is True
+        queries = []
+        listener = lambda *a, **k: queries.append(1)  # noqa: E731
+        event.listen(db.get_engine().sync_engine, "before_cursor_execute", listener)
+        try:
+            for minute in (42, 43, 50, 59):
+                clock.set_now(ist(2026, 10, 8, 8, minute))
+                r = await client.post("/api/internal/run-scheduled-checks?wait=true", headers=SCHED_HEADERS)
+                assert r.json()["status"] == "idle"
+            clock.set_now(ist(2026, 10, 8, 23, 0))  # outside the catch-up window, nothing due
+            assert (await client.post("/api/internal/run-scheduled-checks", headers=SCHED_HEADERS)).json()["status"] == "idle"
+        finally:
+            event.remove(db.get_engine().sync_engine, "before_cursor_execute", listener)
+        assert queries == []
+        # Changing the schedule is picked up on the next tick
+        await login(client)
+        assert (await client.put("/api/settings", json={"default_monitor_time": "23:30"})).status_code == 200
+        clock.set_now(ist(2026, 10, 8, 23, 31))
+        r = await client.post("/api/internal/run-scheduled-checks?wait=true", headers=SCHED_HEADERS)
+        assert r.json()["websites_due"] == 1

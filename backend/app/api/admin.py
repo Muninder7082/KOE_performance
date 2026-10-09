@@ -69,6 +69,7 @@ async def update_app_settings(body: SettingsUpdate, user: User = Depends(require
         app = await settings_service.update(session, body.model_dump(exclude_unset=True, mode="json"))
     except ValidationError as exc:
         raise HTTPException(422, exc.errors(include_url=False, include_input=False)) from None
+    get_container().scheduler.invalidate()  # new schedule takes effect on the next tick
     return {"settings": app.model_dump(mode="json")}
 
 

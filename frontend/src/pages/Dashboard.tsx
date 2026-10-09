@@ -53,8 +53,8 @@ export default function DashboardPage() {
       {loading && !data ? <LoadingBlock /> : error && !data ? <ErrorState message={error} onRetry={() => reload()} /> : c && (
         <>
           <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-7">
-            <StatCard label="Total websites" value={c.total_websites} onClick={() => setFilter("all")} active={filter === "all"} />
-            <StatCard label="Active monitors" value={c.active_monitors} onClick={() => toggle("active")} active={filter === "active"} />
+            <StatCard label="Total pages" value={c.total_websites} onClick={() => setFilter("all")} hint={filter === "all" ? undefined : "Show all"} />
+            <StatCard label="Active pages" value={c.active_monitors} onClick={() => toggle("active")} active={filter === "active"} />
             <StatCard label="Today's tests" value={c.tests_today} onClick={() => toggle("today")} active={filter === "today"} hint="Pages tested today" />
             <StatCard label="Next run" value={<span className="text-lg">{data.schedule ? fmtDateTime(data.schedule.next_run_at).slice(-5) : "—"}</span>}
               hint={data.schedule ? `${fmtDateTime(data.schedule.next_run_at).slice(0, 11)} · all pages` : undefined} />

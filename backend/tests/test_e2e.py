@@ -126,7 +126,7 @@ async def test_full_workflow(env):
         # Logs available
         assert (await client.get("/api/email-logs")).json()["total"] >= 2
         runs = (await client.get("/api/task-runs")).json()
-        assert runs["total"] == 3 and runs["items"][0]["status"] == "completed"
+        assert runs["total"] == 1 and runs["items"][0]["status"] == "completed"  # idle ticks are not logged
         dash = (await client.get("/api/dashboard")).json()
         assert dash["cards"]["total_websites"] == 2 and dash["cards"]["attention"] == 1
         assert dash["schedule"]["description"].startswith("Daily at 08:40 AM")
